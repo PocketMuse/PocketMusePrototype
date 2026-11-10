@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -42,6 +44,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.pocketmuseprototype.R
 import kotlinx.coroutines.launch
@@ -124,6 +127,7 @@ private fun AppHeader(
     Row(modifier = modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         FilledIconButton(
             onClick = onOpenMenu,
+            modifier = Modifier.size(48.dp),
             colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = colors.surfaceContainer,
                 contentColor = colors.onSurface
@@ -141,10 +145,17 @@ private fun AppHeader(
                 Tab(
                     selected = tab == selectedTab,
                     onClick = { onTabSelected(tab) },
-                    text = { Text(stringResource(tab.label)) },
+                    modifier = Modifier.heightIn(min = 56.dp),
                     selectedContentColor = colors.onSurface,
                     unselectedContentColor = colors.onSurfaceVariant
-                )
+                ) {
+                    Text(
+                        text = stringResource(tab.label),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }
