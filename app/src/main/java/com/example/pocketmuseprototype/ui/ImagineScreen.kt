@@ -1,22 +1,20 @@
 package com.example.pocketmuseprototype.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -31,34 +29,24 @@ import com.example.pocketmuseprototype.R
 
 @Composable
 internal fun ImagineScreen(modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.colorScheme
-    Column(modifier) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+    val cardSpacing = Arrangement.spacedBy(8.dp)
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = modifier,
+        contentPadding = PaddingValues(bottom = 12.dp),
+        horizontalArrangement = cardSpacing,
+        verticalArrangement = cardSpacing
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             CivitaiAccess()
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                repeat(2) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        repeat(2) {
-                            Box(
-                                Modifier.weight(1f).aspectRatio(3f / 4f)
-                                    .background(colors.surfaceContainer, MaterialTheme.shapes.large)
-                            )
-                        }
-                    }
-                }
-            }
         }
-        Surface(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp),
-            shape = CircleShape,
-            color = colors.surfaceContainerLow,
-            contentColor = colors.onSurfaceVariant,
-            border = BorderStroke(1.dp, colors.outline)
-        ) {
-            Text(
-                text = stringResource(R.string.imagine_prompt),
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                style = MaterialTheme.typography.bodyLarge
+        items(8) {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(3f / 4f)
+                    .background(
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = MaterialTheme.shapes.large
+                    )
             )
         }
     }

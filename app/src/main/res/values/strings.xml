@@ -10,5 +10,4 @@
     <string name="imagine_civitai_title">Civitai 액세스</string>
     <string name="imagine_civitai_description">Civitai에 연결해 다양한 이미지 생성 모델을 다운로드해 보세요.</string>
     <string name="imagine_civitai_connect">Civitai 연결</string>
-    <string name="imagine_prompt">상상한 이미지를 입력해 보세요</string>
 </resources>

@@ -1,12 +1,17 @@
 package com.example.pocketmuseprototype
 
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
 import org.junit.Rule
 import org.junit.Test
 
@@ -21,6 +26,19 @@ class AppNavigationTest {
 
         compose.onNodeWithText("Models").performClick()
         compose.onNodeWithText("Civitai 연결").assertDoesNotExist()
+    }
+
+    @Test
+    fun imagineGalleryScrollsWhileTabsStayVisible() {
+        val imagine = compose.onNodeWithText("Imagine")
+        val intro = compose.onNodeWithText("Civitai 액세스")
+        imagine.performClick()
+        intro.assertIsDisplayed()
+
+        compose.onNode(hasScrollAction()).performTouchInput { swipeUp() }
+
+        intro.assertIsNotDisplayed()
+        imagine.assertIsDisplayed().assertIsSelected()
     }
 
     @Test
