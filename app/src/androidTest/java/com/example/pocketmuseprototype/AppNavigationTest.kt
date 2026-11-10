@@ -39,7 +39,7 @@ class AppNavigationTest {
         compose.onNodeWithText("3.48 GB").assertIsDisplayed()
         compose.onAllNodesWithText("Download")[0].assertIsNotEnabled()
 
-        compose.onNodeWithText("Models").performClick()
+        compose.onNodeWithText("Library").performClick()
         text.assertDoesNotExist()
         image.assertDoesNotExist()
 
@@ -71,7 +71,7 @@ class AppNavigationTest {
 
         compose.onNodeWithText("Market").performClick().assertIsSelected()
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
-        compose.onNodeWithText("Models").performClick().assertIsSelected()
+        compose.onNodeWithText("Library").performClick().assertIsSelected()
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
 
         compose.onNodeWithText("Chat").performClick().assertIsSelected()
