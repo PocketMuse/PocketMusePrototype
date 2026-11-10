@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -36,6 +37,7 @@ class AppNavigationTest {
         connect.assertDoesNotExist()
         model.assertIsDisplayed()
         compose.onNodeWithText("3.48 GB").assertIsDisplayed()
+        compose.onAllNodesWithText("Download")[0].assertIsNotEnabled()
 
         compose.onNodeWithText("Models").performClick()
         text.assertDoesNotExist()
