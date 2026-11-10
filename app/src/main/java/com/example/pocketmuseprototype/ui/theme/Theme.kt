@@ -1,6 +1,5 @@
 package com.example.pocketmuseprototype.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -9,12 +8,20 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = Color(0xFFADC9F3),
+    background = Color(0xFF202124),
+    onBackground = Color(0xFFF1F1F3),
+    surface = Color(0xFF202124),
+    onSurface = Color(0xFFF1F1F3),
+    onSurfaceVariant = Color(0xFFB7B8C0),
+    surfaceContainerLow = Color(0xFF191A1D),
+    surfaceContainer = Color(0xFF292B30),
+    surfaceContainerHigh = Color(0xFF32363E),
+    outline = Color(0xFF64666F)
 )
 
 private val LightColorScheme = lightColorScheme(

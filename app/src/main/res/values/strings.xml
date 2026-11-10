@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">PocketMusePrototype</string>
+    <string name="tab_chat">Chat</string>
+    <string name="tab_imagine">Imagine</string>
+    <string name="tab_models">Models</string>
+    <string name="open_menu">메뉴 열기</string>
+    <string name="chat_input">채팅 입력</string>
+    <string name="chat_placeholder">무엇이든 만들어 보세요</string>
+    <string name="chat_send">전송</string>
 </resources>
