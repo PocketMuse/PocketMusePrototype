@@ -20,25 +20,41 @@ class AppNavigationTest {
     val compose = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun imagineShowsCivitaiSetupOnlyOnItsTab() {
-        compose.onNodeWithText("Imagine").performClick().assertIsSelected()
-        compose.onNodeWithText("Civitai 연결").assertIsNotEnabled()
+    fun marketShowsCivitaiOnlyInTheImageCategory() {
+        val market = compose.onNodeWithText("Market")
+        val text = compose.onNodeWithText("Text")
+        val image = compose.onNodeWithText("Image")
+        val connect = compose.onNodeWithText("Civitai 연결")
+
+        market.performClick().assertIsSelected()
+        image.assertIsSelected()
+        connect.assertIsNotEnabled()
+
+        text.performClick().assertIsSelected()
+        connect.assertDoesNotExist()
 
         compose.onNodeWithText("Models").performClick()
-        compose.onNodeWithText("Civitai 연결").assertDoesNotExist()
+        text.assertDoesNotExist()
+        image.assertDoesNotExist()
+
+        market.performClick()
+        text.assertIsSelected()
+        image.performClick().assertIsSelected()
+        connect.assertIsNotEnabled()
     }
 
     @Test
-    fun imagineGalleryScrollsWhileTabsStayVisible() {
-        val imagine = compose.onNodeWithText("Imagine")
+    fun marketImageGalleryScrollsWhileTabsStayVisible() {
+        val market = compose.onNodeWithText("Market")
         val intro = compose.onNodeWithText("Civitai 액세스")
-        imagine.performClick()
+        market.performClick()
         intro.assertIsDisplayed()
 
         compose.onNode(hasScrollAction()).performTouchInput { swipeUp() }
 
         intro.assertIsNotDisplayed()
-        imagine.assertIsDisplayed().assertIsSelected()
+        market.assertIsDisplayed().assertIsSelected()
+        compose.onNodeWithText("Image").assertIsDisplayed().assertIsSelected()
     }
 
     @Test
@@ -46,7 +62,7 @@ class AppNavigationTest {
         compose.onNodeWithText("Chat").assertIsSelected()
         compose.onNode(hasSetTextAction()).performTextInput("A moonlit garden")
 
-        compose.onNodeWithText("Imagine").performClick().assertIsSelected()
+        compose.onNodeWithText("Market").performClick().assertIsSelected()
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
         compose.onNodeWithText("Models").performClick().assertIsSelected()
         compose.onNode(hasSetTextAction()).assertDoesNotExist()

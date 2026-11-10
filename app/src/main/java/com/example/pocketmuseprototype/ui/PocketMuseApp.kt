@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +52,7 @@ import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
     Chat(R.string.tab_chat),
-    Imagine(R.string.tab_imagine),
+    Market(R.string.tab_market),
     Models(R.string.tab_models)
 }
 
@@ -61,6 +62,7 @@ private val ContentMaxWidth = 560.dp
 internal fun PocketMuseApp() {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     var draft by rememberSaveable { mutableStateOf("") }
+    val tabStateHolder = rememberSaveableStateHolder()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
@@ -105,9 +107,12 @@ internal fun PocketMuseApp() {
                                 .fillMaxWidth().padding(bottom = 12.dp)
                         )
                     }
-                    AppTab.Imagine -> ImagineScreen(
-                        modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
-                    )
+                    AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {
+                        MarketScreen(
+                            modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth)
+                                .fillMaxWidth()
+                        )
+                    }
                     AppTab.Models -> Unit
                 }
             }
