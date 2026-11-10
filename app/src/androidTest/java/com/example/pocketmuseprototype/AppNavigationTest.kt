@@ -20,18 +20,22 @@ class AppNavigationTest {
     val compose = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun marketShowsCivitaiOnlyInTheImageCategory() {
+    fun marketShowsContentForTheSelectedCategory() {
         val market = compose.onNodeWithText("Market")
         val text = compose.onNodeWithText("Text")
         val image = compose.onNodeWithText("Image")
         val connect = compose.onNodeWithText("Civitai 연결")
+        val model = compose.onNodeWithText("gemma-4-E2B-it-MNN")
 
         market.performClick().assertIsSelected()
         image.assertIsSelected()
         connect.assertIsNotEnabled()
+        model.assertDoesNotExist()
 
         text.performClick().assertIsSelected()
         connect.assertDoesNotExist()
+        model.assertIsDisplayed()
+        compose.onNodeWithText("3.48 GB").assertIsDisplayed()
 
         compose.onNodeWithText("Models").performClick()
         text.assertDoesNotExist()
@@ -41,6 +45,7 @@ class AppNavigationTest {
         text.assertIsSelected()
         image.performClick().assertIsSelected()
         connect.assertIsNotEnabled()
+        model.assertDoesNotExist()
     }
 
     @Test

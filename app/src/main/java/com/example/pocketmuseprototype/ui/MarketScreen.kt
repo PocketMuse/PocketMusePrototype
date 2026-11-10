@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +49,7 @@ private enum class MarketCategory(@get:StringRes val label: Int) {
 internal fun MarketScreen(modifier: Modifier = Modifier) {
     var category by rememberSaveable { mutableStateOf(MarketCategory.Image) }
     val galleryState = rememberLazyGridState()
+    val textListState = rememberLazyListState()
     val colors = MaterialTheme.colorScheme
 
     Column(modifier) {
@@ -66,8 +68,9 @@ internal fun MarketScreen(modifier: Modifier = Modifier) {
                 )
             }
         }
-        if (category == MarketCategory.Image) {
-            ImageGallery(state = galleryState, modifier = Modifier.weight(1f))
+        when (category) {
+            MarketCategory.Text -> TextModelList(state = textListState, modifier = Modifier.weight(1f))
+            MarketCategory.Image -> ImageGallery(state = galleryState, modifier = Modifier.weight(1f))
         }
     }
 }
