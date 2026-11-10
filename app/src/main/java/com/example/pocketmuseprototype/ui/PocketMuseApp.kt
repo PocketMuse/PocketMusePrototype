@@ -52,6 +52,8 @@ private enum class AppTab(@get:StringRes val label: Int) {
     Models(R.string.tab_models)
 }
 
+private val ContentMaxWidth = 560.dp
+
 @Composable
 internal fun PocketMuseApp() {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
@@ -88,15 +90,22 @@ internal fun PocketMuseApp() {
                         focusManager.clearFocus()
                         scope.launch { drawerState.open() }
                     },
-                    modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth()
+                    modifier = Modifier.widthIn(max = ContentMaxWidth).fillMaxWidth()
                 )
-                Spacer(Modifier.weight(1f))
-                if (selectedTab == AppTab.Chat) {
-                    ChatComposer(
-                        draft = draft,
-                        onDraftChange = { draft = it },
-                        modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(bottom = 12.dp)
+                when (selectedTab) {
+                    AppTab.Chat -> {
+                        Spacer(Modifier.weight(1f))
+                        ChatComposer(
+                            draft = draft,
+                            onDraftChange = { draft = it },
+                            modifier = Modifier.widthIn(max = ContentMaxWidth)
+                                .fillMaxWidth().padding(bottom = 12.dp)
+                        )
+                    }
+                    AppTab.Imagine -> ImagineScreen(
+                        modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
                     )
+                    AppTab.Models -> Unit
                 }
             }
         }
