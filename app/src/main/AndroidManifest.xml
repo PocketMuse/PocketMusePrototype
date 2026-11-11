@@ -4,7 +4,16 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+    </queries>
+
     <application
+        android:name=".PocketMuseApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -24,6 +33,14 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+        <activity
+            android:name="net.openid.appauth.RedirectUriReceiverActivity"
+            tools:node="remove" />
+        <activity
+            android:name=".auth.RedirectUriReceiverActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
 

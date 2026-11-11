@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.example.pocketmuseprototype.R
+import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.catalog.LoadStatus
 import com.example.pocketmuseprototype.catalog.MarketState
@@ -70,6 +71,10 @@ private enum class MarketCategory(@get:StringRes val label: Int) {
 @Composable
 internal fun MarketScreen(
     viewModel: MarketViewModel,
+    authState: AuthState,
+    onConnect: () -> Unit,
+    onRetryAuth: () -> Unit,
+    onDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
     onDownloadRequest: ((CatalogCheckpoint) -> Unit)? = null
 ) {
@@ -99,14 +104,6 @@ internal fun MarketScreen(
             MarketCategory.Image -> {
                 val catalog by viewModel.state.collectAsStateWithLifecycle()
                 LaunchedEffect(viewModel) { viewModel.start() }
-                Text(
-                    text = stringResource(
-                        if (onDownloadRequest == null) R.string.market_catalog_preview else R.string.market_catalog
-                    ),
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurfaceVariant
-                )
                 ImageGallery(
                     catalog = catalog,
                     gridState = galleryState,
@@ -114,7 +111,9 @@ internal fun MarketScreen(
                     onLoadMore = viewModel::loadMore,
                     onDownloadRequest = onDownloadRequest,
                     modifier = Modifier.weight(1f)
-                )
+                ) {
+                    CivitaiAccountHeader(authState, onConnect, onRetryAuth, onDisconnect)
+                }
             }
         }
     }
@@ -127,7 +126,8 @@ private fun ImageGallery(
     onPrefetch: () -> Unit,
     onLoadMore: () -> Unit,
     onDownloadRequest: ((CatalogCheckpoint) -> Unit)?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    header: @Composable () -> Unit
 ) {
     val currentCatalog by rememberUpdatedState(catalog)
     val prefetch by rememberUpdatedState(onPrefetch)
@@ -138,7 +138,7 @@ private fun ImageGallery(
             .collect {
                 val lastCard = gridState.layoutInfo.visibleItemsInfo.lastOrNull { item -> item.key is Long }
                 if (currentCatalog.status == LoadStatus.Ready && lastCard != null &&
-                    lastCard.index >= currentCatalog.models.size - PREFETCH_CARD_COUNT
+                    lastCard.index - 1 >= currentCatalog.models.size - PREFETCH_CARD_COUNT
                 ) {
                     prefetch()
                 }
@@ -154,6 +154,7 @@ private fun ImageGallery(
         horizontalArrangement = cardSpacing,
         verticalArrangement = cardSpacing
     ) {
+        item(key = "civitai-account", span = { GridItemSpan(maxLineSpan) }) { header() }
         items(catalog.models, key = { it.modelId }) { checkpoint ->
             CheckpointCard(checkpoint, onDownloadRequest)
         }
