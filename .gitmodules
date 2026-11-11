@@ -1,0 +1,3 @@
+[submodule "third_party/to-mnn"]
+	path = third_party/to-mnn
+	url = https://github.com/PocketMuse/to-mnn.git

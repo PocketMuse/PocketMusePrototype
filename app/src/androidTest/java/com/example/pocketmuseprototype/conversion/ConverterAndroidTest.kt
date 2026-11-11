@@ -1,0 +1,175 @@
+package com.example.pocketmuseprototype.conversion
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlin.io.path.createTempDirectory
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class ConverterAndroidTest {
+    @Test
+    fun publishesExactOutputBeforeCompletionCallback() = withFixture { fixture ->
+        val callingThread = Thread.currentThread()
+        val events = mutableListOf<ConversionProgress>()
+        var onCallingThread = true
+        var publishedAtCompletion = false
+        val result = ConversionRequest(fixture.options).run { progress ->
+            onCallingThread = onCallingThread && Thread.currentThread() == callingThread
+            events += progress
+            if (progress.stage == ConversionStage.Completed) {
+                publishedAtCompletion = fixture.outputFile.readBytes().contentEquals(expectedOutput)
+            }
+        }
+
+        assertEquals(ConversionStatus.Succeeded, result.status)
+        assertEquals(ConversionErrorCode.NONE, result.errorCode)
+        assertEquals(listOf(ConvertedFile("model.mnn", 13)), result.files)
+        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+        assertFalse(fixture.partial.exists())
+        assertTrue(publishedAtCompletion)
+        assertTrue(onCallingThread)
+        assertEquals(ConversionStage.Validating, events.first().stage)
+        assertEquals(null, events.first().remainingMillis)
+        assertEquals(ConversionStage.Completed, events.last().stage)
+        assertEquals(1.0, events.last().fraction, 0.0)
+        assertEquals(13L, events.last().completedBytes)
+        assertEquals(13L, events.last().totalBytes)
+        assertTrue(events.dropLast(1).all { it.fraction <= 0.99 })
+        assertTrue(events.zipWithNext().all { (a, b) -> a.completedBytes <= b.completedBytes })
+
+        val duplicate = ConversionRequest(fixture.options).run()
+        assertEquals(ConversionStatus.Failed, duplicate.status)
+        assertEquals(ConversionErrorCode.OUTPUT_EXISTS, duplicate.errorCode)
+        assertTrue(duplicate.files.isEmpty())
+        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+    }
+
+    @Test
+    fun cancellationFromAnotherThreadCleansStagingBeforeReturning() = withFixture { fixture ->
+        val request = ConversionRequest(fixture.options)
+        val caller = Executors.newSingleThreadExecutor()
+        try {
+            val result = request.run { progress ->
+                if (progress.stage == ConversionStage.Finalizing) {
+                    caller.submit { request.requestCancel() }.get(10, TimeUnit.SECONDS)
+                    assertTrue(fixture.partial.isDirectory)
+                    assertFalse(fixture.options.outputDir.exists())
+                }
+            }
+            assertEquals(ConversionStatus.Cancelled, result.status)
+            assertEquals(ConversionErrorCode.NONE, result.errorCode)
+            assertTrue(result.files.isEmpty())
+            assertFalse(fixture.partial.exists())
+            assertFalse(fixture.options.outputDir.exists())
+            request.requestCancel()
+
+            val preCancelled = ConversionRequest(fixture.options)
+            preCancelled.requestCancel()
+            assertEquals(ConversionStatus.Cancelled, preCancelled.run().status)
+            assertEquals(ConversionStatus.Succeeded, ConversionRequest(fixture.options).run().status)
+        } finally {
+            caller.shutdownNow()
+        }
+    }
+
+    @Test
+    fun callbackFailureAndReentryRespectPublicationBoundary() = withFixture { fixture ->
+        var reentrantConversion: ConversionErrorCode? = null
+        var reentrantCleanup: ConversionErrorCode? = null
+        val failed = ConversionRequest(fixture.options).run { progress ->
+            if (progress.stage == ConversionStage.Finalizing) {
+                reentrantConversion = ConversionRequest(fixture.options).run().errorCode
+                reentrantCleanup = ConversionRequest.cleanupPartial(fixture.options.outputDir)
+                error("Observer failed before publication")
+            }
+        }
+        assertEquals(ConversionErrorCode.BUSY, reentrantConversion)
+        assertEquals(ConversionErrorCode.BUSY, reentrantCleanup)
+        assertEquals(ConversionStatus.Failed, failed.status)
+        assertEquals(ConversionErrorCode.CALLBACK_FAILED, failed.errorCode)
+        assertFalse(fixture.partial.exists())
+        assertFalse(fixture.options.outputDir.exists())
+
+        val request = ConversionRequest(fixture.options)
+        val success = request.run { progress ->
+            if (progress.stage == ConversionStage.Completed) {
+                request.requestCancel()
+                error("Observer failed after publication")
+            }
+        }
+        assertEquals(ConversionStatus.Succeeded, success.status)
+        assertEquals(ConversionErrorCode.NONE, success.errorCode)
+        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+    }
+
+    @Test
+    fun staleOutputRequiresOwnershipBeforeCleanup() = withFixture { fixture ->
+        assertTrue(fixture.partial.mkdir())
+        val foreign = fixture.partial.resolve("keep.txt").apply { writeText("caller file") }
+        val result = ConversionRequest(fixture.options).run()
+        assertEquals(ConversionStatus.Failed, result.status)
+        assertEquals(ConversionErrorCode.STALE_OUTPUT, result.errorCode)
+        assertEquals(ConversionErrorCode.CLEANUP_FAILED, ConversionRequest.cleanupPartial(fixture.options.outputDir))
+        assertEquals("caller file", foreign.readText())
+
+        assertTrue(foreign.delete())
+        fixture.partial.resolve(".sd15-converter.json").writeText(
+            """{"format":"sd15-mnn-template","files":["model.mnn"]}""",
+        )
+        fixture.partial.resolve("model.mnn").writeBytes(expectedOutput)
+        assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
+        assertFalse(fixture.partial.exists())
+        assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
+    }
+
+    private fun withFixture(test: (Fixture) -> Unit) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = createTempDirectory(context.cacheDir.toPath(), "converter-").toFile()
+        try {
+            test(Fixture(directory.resolve("모델-📦").apply { check(mkdir()) }))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    // Matches the upstream ConversionFixture's literal, F32-to-F16 and zero segments.
+    private class Fixture(root: File) {
+        val options = ConversionOptions(root.resolve("weights.safetensors"), root, root.resolve("output"), chunkBytes = 4)
+        val partial = root.resolve("output.partial")
+        val outputFile = options.outputDir.resolve("model.mnn")
+
+        init {
+            root.resolve("graph.bin").writeBytes(byteArrayOf(0x4d, 0x4e, 0x4e))
+            root.resolve("manifest.json").writeText(
+                """{"format":"sd15-mnn-template","version":1,"mnn_version":"3.6.1",
+                "template":"graph.bin","template_size":3,"files":[{"name":"model.mnn","size":13,"segments":[
+                {"kind":"literal","offset":0,"size":3,"template_offset":0},
+                {"kind":"tensor","offset":3,"size":8,"key":"w","source_shape":[4],"shape":[4],"dtype":"F16","positive_zero":false},
+                {"kind":"zero","offset":11,"size":2}]}]}""".trimIndent(),
+            )
+            val header = """{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}""".encodeToByteArray()
+            options.checkpoint.writeBytes(
+                ByteBuffer.allocate(Long.SIZE_BYTES + header.size + 4 * Float.SIZE_BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putLong(header.size.toLong())
+                    .put(header)
+                    .putFloat(1f).putFloat(-0f).putFloat(2f).putFloat(-1f)
+                    .array(),
+            )
+        }
+    }
+
+    companion object {
+        private val expectedOutput = byteArrayOf(0x4d, 0x4e, 0x4e, 0, 0x3c, 0, -128, 0, 0x40, 0, -68, 0, 0)
+    }
+}
