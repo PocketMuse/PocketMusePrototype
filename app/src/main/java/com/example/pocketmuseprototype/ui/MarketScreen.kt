@@ -266,7 +266,7 @@ private fun CheckpointCard(
                     Icon(
                         painter = painterResource(R.drawable.ic_download),
                         contentDescription = stringResource(
-                            if (onDownloadRequest == null) R.string.market_download_unavailable else R.string.market_download
+                            if (onDownloadRequest == null) R.string.market_download_connect else R.string.market_download
                         )
                     )
                 }

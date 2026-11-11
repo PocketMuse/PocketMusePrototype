@@ -1,6 +1,7 @@
 package com.example.pocketmuseprototype.ui
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,13 +26,17 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -50,13 +55,16 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.pocketmuseprototype.R
 import com.example.pocketmuseprototype.auth.AuthState
+import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.catalog.MarketViewModel
+import com.example.pocketmuseprototype.download.LibraryItem
+import com.example.pocketmuseprototype.download.LibraryModel
 import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
     Chat(R.string.tab_chat),
     Market(R.string.tab_market),
-    Models(R.string.tab_models)
+    Library(R.string.tab_models)
 }
 
 private val ContentMaxWidth = 560.dp
@@ -67,7 +75,12 @@ internal fun PocketMuseApp(
     onConnect: () -> Unit,
     onRetryAuth: () -> Unit,
     onDisconnect: () -> Unit,
-    marketViewModel: MarketViewModel = viewModel(factory = MarketViewModel.Factory)
+    marketViewModel: MarketViewModel = viewModel(factory = MarketViewModel.Factory),
+    library: List<LibraryItem> = emptyList(),
+    onDownloadRequest: ((CatalogCheckpoint) -> Unit)? = null,
+    onRemoveModel: (LibraryModel) -> Unit = {},
+    snackbar: SnackbarHostState = remember { SnackbarHostState() },
+    libraryRequest: Int = 0
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     var draft by rememberSaveable { mutableStateOf("") }
@@ -76,6 +89,12 @@ internal fun PocketMuseApp(
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val colors = MaterialTheme.colorScheme
+    LaunchedEffect(libraryRequest) {
+        if (libraryRequest > 0) {
+            focusManager.clearFocus()
+            selectedTab = AppTab.Library
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -88,47 +107,56 @@ internal fun PocketMuseApp(
         }
     ) {
         Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {
-            Column(
-                modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                AppHeader(
-                    selectedTab = selectedTab,
-                    onTabSelected = {
-                        if (it != selectedTab) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp)) {
+                Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    AppHeader(
+                        selectedTab = selectedTab,
+                        onTabSelected = {
+                            if (it != selectedTab) {
+                                focusManager.clearFocus()
+                                selectedTab = it
+                            }
+                        },
+                        onOpenMenu = {
                             focusManager.clearFocus()
-                            selectedTab = it
+                            scope.launch { drawerState.open() }
+                        },
+                        modifier = Modifier.widthIn(max = ContentMaxWidth).fillMaxWidth()
+                    )
+                    when (selectedTab) {
+                        AppTab.Chat -> {
+                            Spacer(Modifier.weight(1f))
+                            ChatComposer(
+                                draft = draft,
+                                onDraftChange = { draft = it },
+                                modifier = Modifier.widthIn(max = ContentMaxWidth)
+                                    .fillMaxWidth().padding(bottom = 12.dp)
+                            )
                         }
-                    },
-                    onOpenMenu = {
-                        focusManager.clearFocus()
-                        scope.launch { drawerState.open() }
-                    },
-                    modifier = Modifier.widthIn(max = ContentMaxWidth).fillMaxWidth()
-                )
-                when (selectedTab) {
-                    AppTab.Chat -> {
-                        Spacer(Modifier.weight(1f))
-                        ChatComposer(
-                            draft = draft,
-                            onDraftChange = { draft = it },
-                            modifier = Modifier.widthIn(max = ContentMaxWidth)
-                                .fillMaxWidth().padding(bottom = 12.dp)
-                        )
+                        AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {
+                            MarketScreen(
+                                viewModel = marketViewModel,
+                                authState = authState,
+                                onConnect = onConnect,
+                                onRetryAuth = onRetryAuth,
+                                onDisconnect = onDisconnect,
+                                onDownloadRequest = onDownloadRequest.takeIf { authState is AuthState.Connected },
+                                modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth)
+                                    .fillMaxWidth()
+                            )
+                        }
+                        AppTab.Library -> tabStateHolder.SaveableStateProvider(AppTab.Library.name) {
+                            LibraryScreen(
+                                library, onRemoveModel,
+                                Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
+                            )
+                        }
                     }
-                    AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {
-                        MarketScreen(
-                            viewModel = marketViewModel,
-                            authState = authState,
-                            onConnect = onConnect,
-                            onRetryAuth = onRetryAuth,
-                            onDisconnect = onDisconnect,
-                            modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth)
-                                .fillMaxWidth()
-                        )
-                    }
-                    AppTab.Models -> Unit
                 }
+                SnackbarHost(
+                    hostState = snackbar,
+                    modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = ContentMaxWidth)
+                )
             }
         }
     }

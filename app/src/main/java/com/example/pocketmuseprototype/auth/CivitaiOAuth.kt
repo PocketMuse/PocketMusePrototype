@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import androidx.activity.result.ActivityResult
+import androidx.browser.auth.AuthTabIntent
 import androidx.core.net.toUri
 import java.io.IOException
 import kotlin.coroutines.resume
@@ -73,6 +74,16 @@ internal object CivitaiOAuth {
             uri.getQueryParameters("code").singleOrNull() != code
         ) return BrowserResult.Failed
         return BrowserResult.Code(state, code, verifier)
+    }
+
+    fun authTabResult(resultCode: Int, uri: Uri?, expectedState: String, verifier: String): BrowserResult {
+        if (resultCode == AuthTabIntent.RESULT_CANCELED) return BrowserResult.Canceled
+        if (resultCode != AuthTabIntent.RESULT_OK) return BrowserResult.Failed
+        val callback = uri?.let(::verifiedRedirect) ?: return BrowserResult.Failed
+        if (callback.getQueryParameter("state") != expectedState) return BrowserResult.Failed
+        if (callback.getQueryParameter("error") == "access_denied") return BrowserResult.Canceled
+        val code = callback.getQueryParameter("code") ?: return BrowserResult.Failed
+        return BrowserResult.Code(expectedState, code, verifier)
     }
 
     fun tokenRequest() = TokenRequest.Builder(configuration, CIVITAI_CLIENT_ID)
