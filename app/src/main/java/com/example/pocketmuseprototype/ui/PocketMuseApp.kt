@@ -47,7 +47,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.pocketmuseprototype.R
+import com.example.pocketmuseprototype.catalog.MarketViewModel
 import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
@@ -59,7 +61,7 @@ private enum class AppTab(@get:StringRes val label: Int) {
 private val ContentMaxWidth = 560.dp
 
 @Composable
-internal fun PocketMuseApp() {
+internal fun PocketMuseApp(marketViewModel: MarketViewModel = viewModel(factory = MarketViewModel.Factory)) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     var draft by rememberSaveable { mutableStateOf("") }
     val tabStateHolder = rememberSaveableStateHolder()
@@ -109,6 +111,7 @@ internal fun PocketMuseApp() {
                     }
                     AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {
                         MarketScreen(
+                            viewModel = marketViewModel,
                             modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth)
                                 .fillMaxWidth()
                         )
