@@ -9,6 +9,11 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+val converterBenchmark = providers.gradleProperty("converterBenchmark").orNull
+require(converterBenchmark == null || converterBenchmark in setOf("Debug", "Release", "RelWithDebInfo")) {
+    "converterBenchmark must be Debug, Release or RelWithDebInfo"
+}
+
 android {
     namespace = "com.example.pocketmuseprototype"
     ndkVersion = libs.versions.ndk.get()
@@ -46,6 +51,16 @@ android {
     }
 
     buildTypes {
+        if (converterBenchmark != null) {
+            debug {
+                applicationIdSuffix = ".converterbenchmark"
+                externalNativeBuild {
+                    cmake {
+                        arguments += "-DCMAKE_BUILD_TYPE=$converterBenchmark"
+                    }
+                }
+            }
+        }
         release {
             optimization {
                 enable = false
