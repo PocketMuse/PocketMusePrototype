@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ContextWrapper
 import android.net.Uri
 import androidx.activity.result.ActivityResult
+import androidx.browser.auth.AuthTabIntent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.pocketmuseprototype.auth.BrowserResult
@@ -24,6 +25,27 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class CivitaiAuthTest {
+    @Test
+    fun authTabCallbackRequiresVerifiedUriAndPendingStateBeforeCodeExchange() {
+        val request = CivitaiOAuth.authorizationRequest()
+        val state = checkNotNull(request.state)
+        val verifier = checkNotNull(request.codeVerifier)
+        val callback = request.redirectUri.buildUpon()
+            .appendQueryParameter("state", state).appendQueryParameter("code", "synthetic").build()
+        assertSame(BrowserResult.Failed, CivitaiOAuth.authTabResult(
+            AuthTabIntent.RESULT_OK, callback, "different-state", verifier
+        ))
+        assertSame(BrowserResult.Failed, CivitaiOAuth.authTabResult(
+            AuthTabIntent.RESULT_VERIFICATION_FAILED, callback, state, verifier
+        ))
+        assertSame(BrowserResult.Failed, CivitaiOAuth.authTabResult(
+            AuthTabIntent.RESULT_OK, callback.buildUpon().authority("example.test").build(), state, verifier
+        ))
+        val result = CivitaiOAuth.authTabResult(AuthTabIntent.RESULT_OK, callback, state, verifier) as BrowserResult.Code
+        assertEquals("synthetic", result.code)
+        assertEquals(verifier, result.verifier)
+    }
+
     @Test
     fun appAuthBuildsCodeAndS256RequestsAndValidatesBrowserResult() {
         val request = CivitaiOAuth.authorizationRequest()
