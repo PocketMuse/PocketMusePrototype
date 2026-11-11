@@ -1,0 +1,38 @@
+# PocketMusePrototype
+
+Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받는다. 기기에서 독립적으로 호출할 수 있는 SD 1.5 Converter는 [JNI 계약](docs/Converter.md)을 따른다.
+
+## 빌드와 테스트
+
+JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 체크섬이 고정된 nlohmann/json 소스를 가져온다.
+
+Windows 프로젝트 루트에서 실행한다.
+
+```powershell
+git submodule update --init third_party/to-mnn
+.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+.\gradlew.bat :app:connectedDebugAndroidTest
+```
+
+계측 테스트에는 연결된 ARM64 기기가 필요하다. 합성 Converter 테스트는 앱 캐시에 체크포인트와 템플릿을 만든다. [모델 다운로드와 Library](docs/Model-Downloads.md)
+
+## 실제 HQQ 모델 스모크
+
+로컬에 이미 준비한 SD 1.5 safetensors와 호환되는 HQQ 템플릿을 사용한다. `adb`가 여러 기기를 감지하면 `ANDROID_SERIAL`로 테스트 기기를 선택한다. Gradle의 기본 계측 실행은 종료할 때 테스트 앱과 대상 앱을 제거할 수 있으므로, 모델 입력을 준비한 뒤에는 스모크를 ADB로 직접 실행한다.
+
+```powershell
+.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+$checkpoint = 'C:\path\to\model.safetensors'
+$template = 'C:\path\to\template'
+$remote = '/sdcard/Android/data/com.example.pocketmuseprototype/files/converter-smoke'
+adb shell mkdir -p "$remote/template"
+adb push "$checkpoint" "$remote/model.safetensors"
+adb push (Join-Path $template 'graph.bin') "$remote/template/graph.bin"
+adb push (Join-Path $template 'manifest.json') "$remote/template/manifest.json"
+adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversion.ConverterSmokeTest -e converterSmoke true com.example.pocketmuseprototype.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+`$checkpoint`와 `$template`은 실제 로컬 경로로 바꾼다. 출력은 기기에 수 GiB의 여유 공간이 필요하다. 테스트는 결과와 출력 파일 목록·크기를 확인한 뒤 이번 실행의 출력 디렉터리를 정리한다. 입력은 다음 실행에 재사용할 수 있다.

@@ -11,6 +11,7 @@ ksp {
 
 android {
     namespace = "com.example.pocketmuseprototype"
+    ndkVersion = libs.versions.ndk.get()
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -25,6 +26,23 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=c++_shared"
+                targets += "pocketmuse_converter"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = libs.versions.cmake.get()
+        }
     }
 
     buildTypes {
