@@ -78,6 +78,8 @@ class MainActivity : ComponentActivity() {
                     library = library,
                     onDownloadRequest = { enqueue(it, snackbar) },
                     onRemoveModel = { model -> app.appScope.launch { app.downloads.remove(model) } },
+                    onStartConversion = { model -> app.appScope.launch { app.downloads.startConversion(model) } },
+                    onCancelConversion = { model -> app.appScope.launch { app.downloads.cancelConversion(model) } },
                     snackbar = snackbar,
                     libraryRequest = libraryRequest
                 )

@@ -34,6 +34,7 @@ import com.example.pocketmuseprototype.catalog.VersionDto
 import com.example.pocketmuseprototype.download.DownloadStatus
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
+import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
 import java.io.IOException
@@ -89,6 +90,34 @@ class AppNavigationTest {
         compose.onNodeWithText(string(R.string.library_delete)).performClick()
         compose.onNodeWithText(string(R.string.library_models_empty)).assertIsDisplayed()
         compose.runOnIdle { check(removed == listOf(DownloadStatus.Downloading, DownloadStatus.Downloaded)) }
+    }
+
+    @Test
+    fun libraryStartsCancelsAndRetriesConversionWithSeparateProgress() {
+        val downloaded = LibraryModel("1_1", 1, 1, 1, "Checkpoint 1", "Version 1", "fixture.safetensors",
+            100_000_000L, null, null, "fixture", DownloadStatus.Downloaded)
+        val model = mutableStateOf(downloaded)
+        launchApp(
+            library = { listOf(LibraryItem(model.value, null)) },
+            onConvert = {
+                model.value = if (it.conversionStatus == ModelConversionStatus.NotStarted) {
+                    it.copy(conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
+                } else it.copy(conversionStatus = ModelConversionStatus.Converted, conversionProgress = 100)
+            },
+            onCancelConversion = {
+                model.value = it.copy(conversionStatus = ModelConversionStatus.Cancelled, conversionProgress = null)
+            }
+        ) { page(1..1) }
+
+        compose.onNodeWithText("Library").performClick()
+        compose.onNodeWithText(string(R.string.library_convert)).performClick()
+        compose.onNode(SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.37f, 0f..1f)
+        )).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_convert_retry)).performClick()
+        compose.onNodeWithText(string(R.string.library_converted)).assertIsDisplayed()
     }
 
     @Test
@@ -265,6 +294,8 @@ class AppNavigationTest {
         library: () -> List<LibraryItem> = { emptyList() },
         onDownload: ((CatalogCheckpoint) -> Unit)? = null,
         onRemove: (LibraryModel) -> Unit = {},
+        onConvert: (LibraryModel) -> Unit = {},
+        onCancelConversion: (LibraryModel) -> Unit = {},
         fetchPage: suspend (String?) -> ModelsResponse
     ) {
         val viewModel = MarketViewModel(CatalogRepository(fetchPage))
@@ -278,7 +309,9 @@ class AppNavigationTest {
                     marketViewModel = viewModel,
                     library = library(),
                     onDownloadRequest = onDownload,
-                    onRemoveModel = onRemove
+                    onRemoveModel = onRemove,
+                    onStartConversion = onConvert,
+                    onCancelConversion = onCancelConversion
                 )
             }
         }

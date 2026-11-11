@@ -1,11 +1,11 @@
 # 모델 다운로드와 Library
 
-Market → Image에서 Civitai 연결 후 체크포인트를 선택한다. 버튼을 누르면 Market에 대기열 등록을 알리고, Library의 다운로드 관리에 항목을 표시한다. 모델 버전 ID와 파일 ID가 같은 항목은 기존 항목을 삭제한 후 다시 요청할 수 있다. 검증을 마친 원본은 내 모델에 **다운로드 완료**로 표시된다.
+Market → Image에서 Civitai 연결 후 체크포인트를 선택한다. 버튼을 누르면 Market에 대기열 등록을 알리고, Library의 모델 작업에 항목을 표시한다. 모델 버전 ID와 파일 ID가 같은 항목은 기존 항목을 삭제한 후 다시 요청할 수 있다. 검증을 마친 원본은 **다운로드 완료**로 표시되며 HQQ 변환이 자동으로 대기열에 등록된다. [백그라운드 변환 계약](Converter.md#백그라운드-변환)
 
 ## 저장 계약
 
-- Room v1의 `model-library.db`에 `models` 테이블을 둔다. 기본 키 `storageKey`는 양의 정수인 `{modelVersionId}_{fileId}`다. `modelId`, `modelVersionId`, `fileId`, `modelName`, `versionName`, `fileName`, `fileSize`, `sha256`, `thumbnailUrl`, `workId`, `downloadStatus`, `downloadedBytes`, `totalBytes`, `errorCode`를 저장한다. `fileSize`는 처음에는 `sizeKB`로 계산한 추정치이고 완료 후에는 검증된 실제 바이트 수다. `totalBytes`는 응답이 길이를 제공하지 않으면 전송이 끝날 때까지 null이다. [Room 스키마](../app/schemas/com.example.pocketmuseprototype.download.LibraryDatabase/1.json)
-- `ModelStorage`는 `Context.getExternalFilesDir(null)/models/{storageKey}/`에 경로를 계산한다. `thumbnail.webp`, `source/checkpoint.safetensors` 및 전송 중 `source/checkpoint.safetensors.part`를 사용한다. 향후 변환 출력은 같은 모델 디렉터리 아래 `converted/`에 둘 수 있다. Room과 작업 입력은 체크포인트 URL과 인증 정보를 보관하지 않는다. 썸네일은 쿼리와 프래그먼트를 제거한 URL만 보관한다. Android의 클라우드 백업과 기기 간 전송에서 모델 DB와 `models/`를 제외한다. [앱 전용 외부 저장소](https://developer.android.com/training/data-storage/app-specific#external), [Android Auto Backup](https://developer.android.com/identity/data/autobackup)
+- Room v2의 `model-library.db`에 `models` 테이블을 둔다. 기본 키 `storageKey`는 양의 정수인 `{modelVersionId}_{fileId}`다. `fileSize`는 처음에는 `sizeKB`로 계산한 추정치이고 완료 후에는 검증된 실제 바이트 수다. `totalBytes`는 응답이 길이를 제공하지 않으면 전송이 끝날 때까지 null이다. v1에서 모델 메타데이터, 다운로드 상태, 작업 ID를 보존하고 변환 상태를 `NotStarted`로 초기화한다. 기존 완료 항목은 Library에서 변환을 시작할 수 있고, 기존 대기 항목은 다운로드가 완료되는 시점에 자동 변환된다. [Room 스키마](../app/schemas/com.example.pocketmuseprototype.download.LibraryDatabase/2.json)
+- `ModelStorage`는 `Context.getExternalFilesDir(null)/models/{storageKey}/`에 경로를 계산한다. `thumbnail.webp`, `source/checkpoint.safetensors` 및 전송 중 `source/checkpoint.safetensors.part`를 사용한다. 변환 출력은 같은 모델 디렉터리의 `converted/{conversionWorkId}/`에 저장한다. Room과 작업 입력은 체크포인트 URL과 인증 정보를 보관하지 않는다. 썸네일은 쿼리와 프래그먼트를 제거한 URL만 보관한다. Android의 클라우드 백업과 기기 간 전송에서 모델 DB와 `models/`를 제외한다. [앱 전용 외부 저장소](https://developer.android.com/training/data-storage/app-specific#external), [Android Auto Backup](https://developer.android.com/identity/data/autobackup)
 
 ## Checkpoints
 

@@ -1,11 +1,16 @@
 package com.example.pocketmuseprototype.download
 
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
+import com.example.pocketmuseprototype.conversion.ConversionErrorCode
+import com.example.pocketmuseprototype.conversion.HqqTemplate
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import java.security.MessageDigest
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
@@ -41,8 +46,10 @@ class ModelDownloadsTest {
     @get:Rule val folder = TemporaryFolder()
     private val store = MemoryStore()
     private val scheduler = FakeScheduler()
+    private val conversions = FakeScheduler()
     private var mounted = true
-    private val storage = ModelStorage { folder.root.takeIf { mounted } }
+    private var cleanStaging: (File) -> ConversionErrorCode = { error("Unexpected staging cleanup") }
+    private val storage = ModelStorage(cleanupPartial = { cleanStaging(it) }) { folder.root.takeIf { mounted } }
     private val checkpoint = safeTensor()
     private val digest = MessageDigest.getInstance("SHA-256").digest(checkpoint).toHexString()
     private var token: String? = "fake-token"
@@ -76,11 +83,246 @@ class ModelDownloadsTest {
         assertEquals(checkpoint.size.toLong(), updates.last().downloadedBytes)
         assertEquals(checkpoint.size.toLong(), store.all().single().fileSize)
         assertEquals(digest, store.all().single().sha256)
+        val downloaded = store.all().single()
+        assertEquals(ModelConversionStatus.Queued, downloaded.conversionStatus)
+        assertEquals(listOf(downloaded.conversionWorkId), conversions.enqueued)
         assertTrue(storage.checkpoint(model.storageKey).readBytes().contentEquals(checkpoint))
         assertFalse(storage.partial(model.storageKey).exists())
         assertFalse(storage.thumbnail(model.storageKey).exists())
         assertEquals(1, thumbnailRequests)
         assertEquals(EnqueueResult.Exists, downloads.enqueue(candidate))
+    }
+
+    @Test fun failedDownloadDoesNotScheduleConversion() = runBlocking {
+        downloadCode = 403
+        val downloads = downloads()
+        val model = enqueue(downloads)
+        downloads.run(model.storageKey, model.workId, {}, {})
+        val failed = store.all().single()
+        assertEquals(DownloadStatus.Failed, failed.downloadStatus)
+        assertEquals(ModelConversionStatus.NotStarted, failed.conversionStatus)
+        assertTrue(conversions.enqueued.isEmpty())
+    }
+
+    @Test fun persistedConversionIntentIsScheduledOnceAndCancelledWorkerCannotRun() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        val id = checkNotNull(model.conversionWorkId)
+        conversions.states.remove(id)
+        conversions.enqueued.clear()
+        downloads.reconcile()
+        downloads.reconcile()
+        assertEquals(listOf(id), conversions.enqueued)
+        downloads.cancelConversion(model)
+        downloads.runConversion(model.storageKey, id, { error("Cancelled work started") }, {})
+        val cancelled = store.all().single()
+        assertEquals(ModelConversionStatus.Cancelled, cancelled.conversionStatus)
+        val first = async { downloads.startConversion(cancelled) }
+        val second = async { downloads.startConversion(cancelled) }
+        first.await()
+        second.await()
+        val retry = store.all().single()
+        assertEquals(2, conversions.enqueued.size)
+        assertTrue(retry.conversionWorkId != id)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+        downloads.remove(retry)
+        downloads.runConversion(model.storageKey, checkNotNull(retry.conversionWorkId), { error("Deleted work started") }, {})
+        assertNull(store.find(model.storageKey))
+    }
+
+    @Test fun legacyDownloadWaitsForUserAndFailedConversionCanBeRetried() = runBlocking {
+        val downloads = downloads()
+        val model = enqueue(downloads)
+        storage.checkpoint(model.storageKey).writeBytes(checkpoint)
+        val legacy = model.copy(downloadStatus = DownloadStatus.Downloaded, totalBytes = checkpoint.size.toLong())
+        store.update(legacy)
+        downloads.reconcile()
+        assertTrue(conversions.enqueued.isEmpty())
+        downloads.startConversion(legacy)
+        val queued = store.all().single()
+        downloads.runConversion(queued.storageKey, checkNotNull(queued.conversionWorkId), {}, {})
+        val failed = store.all().single()
+        assertEquals("TEMPLATE_INVALID", failed.conversionErrorCode)
+        assertEquals(DownloadStatus.Downloaded, failed.downloadStatus)
+        assertTrue(storage.checkpoint(queued.storageKey).isFile)
+        downloads.startConversion(failed)
+        assertEquals(ModelConversionStatus.Queued, store.all().single().conversionStatus)
+        assertEquals(2, conversions.enqueued.size)
+    }
+
+    @Test fun recoversPublishedOutputAndRejectsSameSizeCorruption() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        val id = checkNotNull(model.conversionWorkId)
+        val output = storage.conversionOutput(model.storageKey, id)
+        assertTrue(output.mkdirs())
+        val file = File(output, "fixture.mnn").apply { writeText("MNN1") }
+        store.update(model.copy(
+            conversionStatus = ModelConversionStatus.Finalizing,
+            conversionTemplateId = "fixture",
+            conversionFiles = """{"fixture.mnn":4}"""
+        ))
+        conversions.states[id] = ScheduledState.Finished
+        downloads.reconcile()
+        val converted = store.all().single()
+        assertEquals(ModelConversionStatus.Converted, converted.conversionStatus)
+        assertTrue(converted.conversionHashes.orEmpty().contains(file.name))
+        val timestamp = file.lastModified()
+        file.writeText("MNN2")
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(timestamp + 5_000))
+        downloads.reconcile()
+        val failed = store.all().single()
+        assertEquals("OUTPUT_INVALID", failed.conversionErrorCode)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+        downloads.startConversion(failed)
+        assertFalse(output.exists())
+    }
+
+    @Test fun invalidOutputMetadataFailsOnlyItsOwnModelAndAllowsRetry() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads).copy(
+            conversionStatus = ModelConversionStatus.Converted,
+            conversionTemplateId = "fixture"
+        )
+        val id = checkNotNull(model.conversionWorkId)
+        val output = storage.conversionOutput(model.storageKey, id).apply { check(mkdirs()) }
+        val peer = model.copy(
+            storageKey = ModelStorage.key(21, 31), modelVersionId = 21, fileId = 31,
+            workId = UUID.randomUUID().toString(), conversionWorkId = UUID.randomUUID().toString(),
+            conversionStatus = ModelConversionStatus.Finalizing, conversionFiles = """{"peer.mnn":4}"""
+        )
+        storage.prepare(peer.storageKey)
+        storage.checkpoint(peer.storageKey).writeBytes(checkpoint)
+        val peerId = checkNotNull(peer.conversionWorkId)
+        val peerOutput = storage.conversionOutput(peer.storageKey, peerId).apply { check(mkdirs()) }
+        peerOutput.resolve("peer.mnn").writeText("MNN1")
+        store.insert(peer)
+        conversions.states[peerId] = ScheduledState.Finished
+
+        val invalidMetadata = listOf(
+            "{" to "fixture.mnn",
+            """["fixture.mnn",4]""" to "fixture.mnn",
+            """{"fixture.mnn":{"size":4}}""" to "fixture.mnn",
+            """{"fixture.mnn":"4"}""" to "fixture.mnn",
+            """{"bad name.mnn":4}""" to "bad name.mnn",
+            """{"empty.mnn":0}""" to "empty.mnn",
+            """{"fixture.mnn":-1}""" to "fixture.mnn"
+        )
+        for ((metadata, name) in invalidMetadata) {
+            val file = output.resolve(name).apply { writeText(if (name == "empty.mnn") "" else "MNN1") }
+            store.update(model.copy(conversionFiles = metadata))
+            downloads.reconcile()
+            val failed = checkNotNull(store.find(model.storageKey))
+            assertEquals(metadata, ModelConversionStatus.Failed, failed.conversionStatus)
+            assertEquals(metadata, "OUTPUT_INVALID", failed.conversionErrorCode)
+            assertTrue(file.delete())
+        }
+
+        assertEquals(ModelConversionStatus.Converted, store.find(peer.storageKey)?.conversionStatus)
+        assertTrue(storage.checkpoint(model.storageKey).readBytes().contentEquals(checkpoint))
+        downloads.startConversion(checkNotNull(store.find(model.storageKey)))
+        assertEquals(ModelConversionStatus.Queued, store.find(model.storageKey)?.conversionStatus)
+        assertFalse(output.exists())
+    }
+
+    @Test fun invalidOutputMetadataStopsAnInterruptedAttemptBeforeNativeExecution() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads).copy(
+            conversionStatus = ModelConversionStatus.Finalizing,
+            conversionTemplateId = "fixture", conversionFiles = "{"
+        )
+        store.update(model)
+        val id = checkNotNull(model.conversionWorkId)
+        downloads.runConversion(model.storageKey, id, { error("Invalid metadata reached foreground work") }, {})
+        assertEquals("OUTPUT_INVALID", store.find(model.storageKey)?.conversionErrorCode)
+        store.update(model)
+        conversions.states[id] = ScheduledState.Finished
+        downloads.reconcile()
+        assertEquals("OUTPUT_INVALID", store.find(model.storageKey)?.conversionErrorCode)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+    }
+
+    @Test fun retiredStagingCleanupSkipsCurrentAndDoesNothingWhenEmpty() {
+        val key = ModelStorage.key(20, 30)
+        val current = storage.conversionOutput(key, UUID.randomUUID().toString())
+        val retired = storage.conversionOutput(key, UUID.randomUUID().toString())
+        assertEquals(ConversionErrorCode.NONE, storage.cleanupRetiredStaging(key, current))
+        val currentPartial = current.resolveSibling("${current.name}.partial").apply { check(mkdirs()) }
+        val retiredPartial = retired.resolveSibling("${retired.name}.partial").apply { check(mkdirs()) }
+        cleanStaging = { output ->
+            assertEquals(retired, output)
+            assertTrue(retiredPartial.delete())
+            ConversionErrorCode.NONE
+        }
+        assertEquals(ConversionErrorCode.NONE, storage.cleanupRetiredStaging(key, current))
+        assertFalse(retiredPartial.exists())
+        assertTrue(currentPartial.isDirectory)
+    }
+
+    @Test fun refusedRetiredStagingBlocksConversionAndDeletionUntilCleanupCanSucceed() = runBlocking {
+        val downloads = downloads { HqqTemplate("fixture", folder.root, mapOf("fixture.mnn" to Long.MAX_VALUE)) }
+        val model = downloadedFixture(downloads)
+        val retired = storage.conversionOutput(model.storageKey, UUID.randomUUID().toString())
+        val partial = retired.resolveSibling("${retired.name}.partial").apply { check(mkdirs()) }
+        val foreign = partial.resolve("foreign.txt").apply { writeText("keep") }
+        cleanStaging = { output ->
+            assertEquals(retired, output)
+            ConversionErrorCode.CLEANUP_FAILED
+        }
+        downloads.runConversion(model.storageKey, checkNotNull(model.conversionWorkId), {}, {})
+        val failed = store.all().single()
+        assertEquals("CLEANUP_FAILED", failed.conversionErrorCode)
+        assertEquals(DownloadStatus.Downloaded, failed.downloadStatus)
+        assertEquals("keep", foreign.readText())
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+
+        downloads.startConversion(failed)
+        val retry = store.all().single()
+        val owned = partial.resolve("fixture.mnn")
+        assertTrue(foreign.renameTo(owned))
+        cleanStaging = { output ->
+            assertEquals(retired, output)
+            assertTrue(owned.delete())
+            assertTrue(partial.delete())
+            ConversionErrorCode.NONE
+        }
+        downloads.runConversion(model.storageKey, checkNotNull(retry.conversionWorkId), {}, {})
+        assertEquals("INSUFFICIENT_SPACE", store.all().single().conversionErrorCode)
+
+        assertTrue(partial.mkdir())
+        foreign.writeText("keep")
+        cleanStaging = { ConversionErrorCode.CLEANUP_FAILED }
+        downloads.remove(store.all().single())
+        val deleting = store.all().single()
+        assertEquals(DownloadStatus.Deleting, deleting.downloadStatus)
+        assertEquals(DownloadError.Cleanup, deleting.errorCode)
+        assertEquals("keep", foreign.readText())
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+        assertTrue(foreign.delete())
+        assertTrue(partial.delete())
+        downloads.reconcile()
+        assertTrue(store.all().isEmpty())
+        assertFalse(storage.checkpoint(model.storageKey).exists())
+    }
+
+    @Test fun insufficientSpaceKeepsTheSourceAndPreventsNativeConversion() = runBlocking {
+        val downloads = downloads {
+            HqqTemplate("fixture", folder.root, mapOf("fixture.mnn" to Long.MAX_VALUE))
+        }
+        val model = downloadedFixture(downloads)
+        val id = checkNotNull(model.conversionWorkId)
+        downloads.runConversion(model.storageKey, id, {}, { error("Native conversion started") })
+        val failed = store.all().single()
+        assertEquals(ModelConversionStatus.Failed, failed.conversionStatus)
+        assertEquals("INSUFFICIENT_SPACE", failed.conversionErrorCode)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+        assertFalse(storage.conversionOutput(model.storageKey, id).exists())
+    }
+
+    private suspend fun downloadedFixture(downloads: ModelDownloads): LibraryModel {
+        val model = enqueue(downloads)
+        downloads.run(model.storageKey, model.workId, {}, {})
+        return store.all().single()
     }
 
     @Test fun unknownLengthReportsBytesAndDoesNotClaimHashVerification() = runBlocking {
@@ -297,11 +539,12 @@ class ModelDownloadsTest {
         assertTrue(store.all().isEmpty())
     }
 
-    private fun downloads(): ModelDownloads {
+    private fun downloads(template: () -> HqqTemplate = { throw IOException("No template for download tests") }): ModelDownloads {
         val client = OkHttpClient.Builder().eventListener(listener).addInterceptor(::intercept).build()
         return ModelDownloads(
             store, storage, scheduler, { token ?: throw DownloadFailure(DownloadError.AuthRequired) },
-            CivitaiTransfer(client) { time.also { time += 600 } }, { _, _ -> error("Image request should fail") }
+            CivitaiTransfer(client) { time.also { time += 600 } }, { _, _ -> error("Image request should fail") },
+            conversions, template
         )
     }
 
@@ -368,7 +611,7 @@ private class MemoryStore : LibraryStore {
     }
 }
 
-private class FakeScheduler : DownloadScheduler {
+private class FakeScheduler : ModelWorkScheduler {
     val states = mutableMapOf<String, ScheduledState>()
     val enqueued = mutableListOf<String>()
     override suspend fun enqueue(key: String, id: String) {

@@ -1,8 +1,11 @@
 package com.example.pocketmuseprototype.download
 
+import com.example.pocketmuseprototype.conversion.ConversionErrorCode
+import com.example.pocketmuseprototype.conversion.ConversionRequest
 import java.io.File
 import java.io.IOException
 import java.io.UncheckedIOException
+import java.nio.file.DirectoryIteratorException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.NoSuchFileException
@@ -10,9 +13,13 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.Comparator
+import java.util.UUID
 
-/** Files are owned by the download coordinator until their verified source has been published. */
-internal class ModelStorage(private val externalFiles: () -> File?) {
+/** App-owned paths shared by the download and conversion workers. */
+internal class ModelStorage(
+    private val cleanupPartial: (File) -> ConversionErrorCode = ConversionRequest.Companion::cleanupPartial,
+    private val externalFiles: () -> File?
+) {
     fun prepare(key: String): File {
         val source = sourceDirectory(key)
         Files.createDirectories(source.toPath())
@@ -23,6 +30,11 @@ internal class ModelStorage(private val externalFiles: () -> File?) {
     fun partial(key: String): File = safeChild(sourceDirectory(key), "checkpoint.safetensors.part")
     fun thumbnail(key: String): File = safeChild(directory(key), "thumbnail.webp")
     fun thumbnailPartial(key: String): File = safeChild(directory(key), "thumbnail.webp.part")
+
+    fun conversionOutput(key: String, id: String): File {
+        require(UUID.fromString(id).toString() == id)
+        return safeChild(convertedDirectory(key), id)
+    }
 
     fun hasCheckpoint(key: String, bytes: Long): Boolean {
         val path = checkpoint(key).toPath()
@@ -54,8 +66,61 @@ internal class ModelStorage(private val externalFiles: () -> File?) {
 
     fun delete(key: String) {
         val path = directory(key).toPath()
+        val cleanup = try {
+            cleanupRetiredStaging(key, current = null)
+        } catch (unavailable: LinkageError) {
+            throw IOException("Converter cleanup unavailable", unavailable)
+        }
+        if (cleanup != ConversionErrorCode.NONE) throw IOException("Converter staging cleanup failed: $cleanup")
+        deleteTree(path.toFile())
+    }
+
+    fun cleanupStaging(output: File): ConversionErrorCode {
+        val partial = output.toPath().resolveSibling("${output.name}.partial")
+        if (Files.notExists(partial, NOFOLLOW_LINKS)) return ConversionErrorCode.NONE
+        return cleanupPartial(output)
+    }
+
+    fun cleanupRetiredStaging(key: String, current: File?): ConversionErrorCode {
+        for (output in stagingOutputs(key)) {
+            if (output == current) continue
+            val cleanup = cleanupStaging(output)
+            if (cleanup != ConversionErrorCode.NONE) return cleanup
+        }
+        return ConversionErrorCode.NONE
+    }
+
+    private fun stagingOutputs(key: String): List<File> {
+        val path = convertedDirectory(key).toPath()
+        val staging = try {
+            Files.newDirectoryStream(path, "*.partial")
+        } catch (_: NoSuchFileException) {
+            return emptyList()
+        }
+        return try {
+            staging.use { entries ->
+                entries.map { entry ->
+                    val id = entry.fileName.toString().removeSuffix(".partial")
+                    try {
+                        conversionOutput(key, id)
+                    } catch (invalid: IllegalArgumentException) {
+                        throw IOException("Unrecognized conversion staging path", invalid)
+                    }
+                }
+            }
+        } catch (error: DirectoryIteratorException) {
+            throw IOException("Cannot list conversion staging", error.cause)
+        }
+    }
+
+    /** A final directory under this attempt ID is app-owned. Staging belongs to the Converter. */
+    fun discardConversion(key: String, id: String) {
+        deleteTree(conversionOutput(key, id))
+    }
+
+    private fun deleteTree(file: File) {
         val files = try {
-            Files.walk(path)
+            Files.walk(file.toPath())
         } catch (_: NoSuchFileException) {
             return
         }
@@ -69,6 +134,7 @@ internal class ModelStorage(private val externalFiles: () -> File?) {
         }
     }
 
+    private fun convertedDirectory(key: String): File = safeChild(directory(key), "converted")
     private fun sourceDirectory(key: String): File = safeChild(directory(key), "source")
 
     private fun directory(key: String): File {
