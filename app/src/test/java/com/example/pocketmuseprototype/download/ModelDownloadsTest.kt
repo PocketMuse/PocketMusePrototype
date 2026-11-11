@@ -1,0 +1,379 @@
+package com.example.pocketmuseprototype.download
+
+import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
+import java.io.File
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.asResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import okio.Source
+import okio.Timeout
+import okio.buffer
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+class ModelDownloadsTest {
+    @get:Rule val folder = TemporaryFolder()
+    private val store = MemoryStore()
+    private val scheduler = FakeScheduler()
+    private var mounted = true
+    private val storage = ModelStorage { folder.root.takeIf { mounted } }
+    private val checkpoint = safeTensor()
+    private val digest = MessageDigest.getInstance("SHA-256").digest(checkpoint).toHexString()
+    private var token: String? = "fake-token"
+    private var downloadCode = 302
+    private var thumbnailRequests = 0
+    private var body = { checkpoint.toResponseBody() }
+    private var selectedFile = 30L
+    private var listener = EventListener.NONE
+    private var metadataHash: String? = null
+    private var time = 0L
+
+    @Test fun streamsVerifiesPublishesAndKeepsThumbnailFailureNonfatal() = runBlocking {
+        val downloads = downloads()
+        val candidate = candidate(hash = digest, thumbnail = "https://images.example/preview?signature=fake")
+        val first = async { downloads.enqueue(candidate) }
+        val second = async { downloads.enqueue(candidate) }
+        assertEquals(setOf(EnqueueResult.Queued, EnqueueResult.Exists), setOf(first.await(), second.await()))
+        val model = store.all().single()
+        assertEquals(listOf(model.workId), scheduler.enqueued)
+        assertEquals("https://images.example/preview", model.thumbnailUrl)
+        val updates = mutableListOf<LibraryModel>()
+        downloads.run(model.storageKey, model.workId, {}, notification = {
+            assertFalse(storage.checkpoint(model.storageKey).exists())
+            updates.add(it)
+        })
+        assertEquals(
+            listOf(DownloadStatus.Queued, DownloadStatus.Downloading, DownloadStatus.Verifying, DownloadStatus.Downloaded),
+            store.statuses.distinct()
+        )
+        assertEquals(0.0f, TransferProgress(updates.first().downloadedBytes, updates.first().totalBytes).fraction)
+        assertEquals(checkpoint.size.toLong(), updates.last().downloadedBytes)
+        assertEquals(checkpoint.size.toLong(), store.all().single().fileSize)
+        assertEquals(digest, store.all().single().sha256)
+        assertTrue(storage.checkpoint(model.storageKey).readBytes().contentEquals(checkpoint))
+        assertFalse(storage.partial(model.storageKey).exists())
+        assertFalse(storage.thumbnail(model.storageKey).exists())
+        assertEquals(1, thumbnailRequests)
+        assertEquals(EnqueueResult.Exists, downloads.enqueue(candidate))
+    }
+
+    @Test fun unknownLengthReportsBytesAndDoesNotClaimHashVerification() = runBlocking {
+        val downloads = downloads()
+        body = { Buffer().write(checkpoint).asResponseBody(contentLength = -1) }
+        val model = enqueue(downloads)
+        val updates = mutableListOf<LibraryModel>()
+        downloads.run(model.storageKey, model.workId, {}, updates::add)
+        val progress = updates.first { it.downloadStatus == DownloadStatus.Downloading && it.downloadedBytes > 0 }
+        assertNull(progress.totalBytes)
+        assertNull(TransferProgress(progress.downloadedBytes, progress.totalBytes).fraction)
+        assertEquals(0.25f, TransferProgress(25L, 100L).fraction)
+        assertEquals(DownloadStatus.Downloaded, store.all().single().downloadStatus)
+        assertNull(store.all().single().sha256)
+    }
+
+    @Test fun rejectsTruncationHashMismatchAndInvalidHeaderAndAllowsNewRequestAfterDeletion() = runBlocking {
+        val downloads = downloads()
+        body = { Buffer().write(checkpoint).asResponseBody(contentLength = checkpoint.size.toLong() + 1) }
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.InvalidLength)
+
+        body = { checkpoint.toResponseBody() }
+        assertFailureAndDelete(downloads, enqueue(downloads, candidate(hash = "0".repeat(64))), DownloadError.InvalidHash)
+
+        body = { safeTensor(end = 3).toResponseBody() }
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.InvalidCheckpoint)
+
+        body = { safeTensor(shape = "2,2").toResponseBody() }
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.InvalidCheckpoint)
+
+        body = { Buffer().write(checkpoint).asResponseBody(contentLength = Long.MAX_VALUE) }
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.NoSpace)
+
+        body = { checkpoint.toResponseBody() }
+        metadataHash = digest.uppercase()
+        val retry = enqueue(downloads)
+        run(downloads, retry)
+        assertEquals(digest, store.all().single().sha256)
+        assertEquals(DownloadStatus.Downloaded, store.all().single().downloadStatus)
+    }
+
+    @Test fun classifiesAuthHttpMetadataAndNetworkErrors() = runBlocking {
+        val downloads = downloads()
+        token = null
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.AuthRequired)
+        token = "fake-token"
+        for ((code, expected) in mapOf(
+            401 to DownloadError.AuthRequired, 403 to DownloadError.Forbidden,
+            404 to DownloadError.NotFound, 429 to DownloadError.RateLimited, 503 to DownloadError.Server
+        )) {
+            downloadCode = code
+            assertFailureAndDelete(downloads, enqueue(downloads), expected)
+        }
+        downloadCode = 302
+        selectedFile = 999
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.NotFound)
+        selectedFile = 30
+        body = {
+            object : Source {
+                private var sent = false
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    if (sent) throw IOException()
+                    sent = true
+                    sink.write(checkpoint, 0, 16)
+                    return 16
+                }
+
+                override fun timeout(): Timeout = Timeout.NONE
+                override fun close() = Unit
+            }.buffer().asResponseBody(contentLength = -1)
+        }
+        assertFailureAndDelete(downloads, enqueue(downloads), DownloadError.Network)
+    }
+
+    @Test fun cancelInterruptsBlockedNetworkReadAndWaitsForHandlesBeforeRemoving() = runBlocking {
+        val readBlocked = CompletableDeferred<Unit>()
+        val cancelledCall = CompletableDeferred<Unit>()
+        val release = CountDownLatch(1)
+        listener = object : EventListener() {
+            override fun canceled(call: Call) {
+                if (call.request().url.host == "cdn.example") cancelledCall.complete(Unit)
+            }
+        }
+        body = {
+            object : Source {
+                private var sent = false
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    if (!sent) {
+                        sent = true
+                        sink.write(checkpoint, 0, 16)
+                        return 16
+                    }
+                    readBlocked.complete(Unit)
+                    check(release.await(10, TimeUnit.SECONDS))
+                    throw IOException()
+                }
+
+                override fun timeout(): Timeout = Timeout.NONE
+                override fun close() = Unit
+            }.buffer().asResponseBody(contentLength = -1)
+        }
+        val downloads = downloads()
+        val model = enqueue(downloads)
+        val worker = launch { run(downloads, model) }
+        try {
+            withTimeout(10_000) {
+                readBlocked.await()
+                downloads.remove(model)
+                cancelledCall.await()
+                assertEquals(DownloadStatus.Cancelling, store.all().single().downloadStatus)
+                assertTrue(storage.partial(model.storageKey).isFile)
+            }
+        } finally {
+            release.countDown()
+            worker.join()
+        }
+        assertTrue(store.all().isEmpty())
+        assertFalse(storage.partial(model.storageKey).exists())
+    }
+
+    @Test fun stoppedWorkerReturnsToQueueAndNextTransferWaitsForIt() = runBlocking {
+        val downloads = downloads()
+        val first = enqueue(downloads)
+        val second = enqueue(downloads, candidate(fileId = 31))
+        val entered = CompletableDeferred<Unit>()
+        val waitForStop = CompletableDeferred<Unit>()
+        val firstWorker = launch {
+            downloads.run(first.storageKey, first.workId, {
+                storage.partial(first.storageKey).writeText("partial")
+                entered.complete(Unit)
+                waitForStop.await()
+            }, {})
+        }
+        entered.await()
+        val secondWorker = launch {
+            downloads.run(second.storageKey, second.workId, {
+                assertFalse(storage.partial(first.storageKey).exists())
+                assertEquals(DownloadStatus.Queued, store.find(first.storageKey)?.downloadStatus)
+                throw DownloadFailure(DownloadError.AuthRequired)
+            }, {})
+        }
+        firstWorker.cancelAndJoin()
+        secondWorker.join()
+        assertEquals(DownloadStatus.Queued, store.find(first.storageKey)?.downloadStatus)
+        assertEquals(DownloadError.AuthRequired, store.find(second.storageKey)?.errorCode)
+    }
+
+    @Test fun reconcilesInterruptedWritesCompletedRenameMissingFilesAndPendingDeletion() = runBlocking {
+        val downloads = downloads()
+        val interrupted = enqueue(downloads)
+        storage.partial(interrupted.storageKey).writeText("partial")
+        store.update(interrupted.copy(downloadStatus = DownloadStatus.Downloading, downloadedBytes = 7))
+        val published = enqueue(downloads, candidate(fileId = 31))
+        storage.checkpoint(published.storageKey).writeBytes(checkpoint)
+        store.update(published.copy(downloadStatus = DownloadStatus.Verifying, totalBytes = checkpoint.size.toLong()))
+        val deleting = enqueue(downloads, candidate(fileId = 32))
+        storage.checkpoint(deleting.storageKey).writeBytes(checkpoint)
+        store.update(deleting.copy(downloadStatus = DownloadStatus.Deleting))
+        val unscheduled = enqueue(downloads, candidate(fileId = 33))
+        scheduler.states.remove(unscheduled.workId)
+        val finished = enqueue(downloads, candidate(fileId = 34))
+        scheduler.states[finished.workId] = ScheduledState.Finished
+
+        downloads.reconcile()
+        assertEquals(DownloadStatus.Queued, store.find(interrupted.storageKey)?.downloadStatus)
+        assertFalse(storage.partial(interrupted.storageKey).exists())
+        assertEquals(DownloadStatus.Downloaded, store.find(published.storageKey)?.downloadStatus)
+        assertTrue(storage.checkpoint(published.storageKey).exists())
+        assertNull(store.find(deleting.storageKey))
+        assertFalse(storage.checkpoint(deleting.storageKey).exists())
+        assertEquals(ScheduledState.Waiting, scheduler.states[unscheduled.workId])
+        assertEquals(DownloadError.Interrupted, store.find(finished.storageKey)?.errorCode)
+
+        storage.checkpoint(published.storageKey).delete()
+        downloads.reconcile()
+        assertEquals(DownloadError.MissingFile, store.find(published.storageKey)?.errorCode)
+    }
+
+    @Test fun unavailableStoragePreventsEnqueueAndFailedDeletionRetainsRecord() = runBlocking {
+        val downloads = downloads()
+        mounted = false
+        assertEquals(EnqueueResult.StorageUnavailable, downloads.enqueue(candidate()))
+        assertTrue(store.all().isEmpty())
+        mounted = true
+        val model = enqueue(downloads)
+        run(downloads, model)
+        mounted = false
+        downloads.remove(store.all().single())
+        assertEquals(DownloadError.Cleanup, store.all().single().errorCode)
+        mounted = true
+        downloads.remove(store.all().single())
+        assertTrue(store.all().isEmpty())
+        assertFalse(storage.checkpoint(model.storageKey).exists())
+    }
+
+    private suspend fun enqueue(downloads: ModelDownloads, candidate: CatalogCheckpoint = candidate()): LibraryModel {
+        assertEquals(EnqueueResult.Queued, downloads.enqueue(candidate))
+        return checkNotNull(store.find(ModelStorage.key(candidate.modelVersionId, candidate.fileId)))
+    }
+
+    private suspend fun run(downloads: ModelDownloads, model: LibraryModel) {
+        downloads.run(model.storageKey, model.workId, {}, {})
+    }
+
+    private suspend fun assertFailureAndDelete(downloads: ModelDownloads, model: LibraryModel, expected: DownloadError) {
+        run(downloads, model)
+        val failed = store.all().single()
+        assertEquals(DownloadStatus.Failed, failed.downloadStatus)
+        assertEquals(expected, failed.errorCode)
+        assertFalse(storage.checkpoint(model.storageKey).exists())
+        assertFalse(storage.partial(model.storageKey).exists())
+        assertEquals(EnqueueResult.Exists, downloads.enqueue(candidate()))
+        downloads.remove(failed)
+        assertTrue(store.all().isEmpty())
+    }
+
+    private fun downloads(): ModelDownloads {
+        val client = OkHttpClient.Builder().eventListener(listener).addInterceptor(::intercept).build()
+        return ModelDownloads(
+            store, storage, scheduler, { token ?: throw DownloadFailure(DownloadError.AuthRequired) },
+            CivitaiTransfer(client) { time.also { time += 600 } }, { _, _ -> error("Image request should fail") }
+        )
+    }
+
+    private fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture")
+        return when {
+            request.url.encodedPath.startsWith("/api/v1/") -> {
+                assertEquals("Bearer fake-token", request.header("Authorization"))
+                val hash = metadataHash?.let { ""","hashes":{"SHA256":"$it"}""" }.orEmpty()
+                response.code(200).body("""
+                    {"id":20,"modelId":10,"files":[{"id":$selectedFile,"type":"Model","name":"fixture.safetensors",
+                      "metadata":{"format":"SafeTensor"},"downloadUrl":"https://civitai.com/api/download/models/20?token=fake"$hash}]}
+                """.trimIndent().toResponseBody()).build()
+            }
+            request.url.host == "civitai.com" -> {
+                assertEquals("Bearer fake-token", request.header("Authorization"))
+                assertEquals("30", request.url.queryParameter("fileId"))
+                assertNull(request.url.queryParameter("token"))
+                response.code(downloadCode).header("Location", "https://cdn.example/file?signature=fake")
+                    .body("".toResponseBody()).build()
+            }
+            request.url.host == "cdn.example" -> {
+                assertNull(request.header("Authorization"))
+                response.code(200).body(body()).build()
+            }
+            else -> {
+                assertNull(request.header("Authorization"))
+                thumbnailRequests++
+                response.code(404).body("".toResponseBody()).build()
+            }
+        }
+    }
+}
+
+private fun candidate(fileId: Long = 30, hash: String? = null, thumbnail: String? = null) = CatalogCheckpoint(
+    10, "Fixture", 20, "v1", fileId, "../../remote.safetensors", 999.0,
+    "https://civitai.com/api/download/models/20", hash, thumbnail
+)
+
+private fun safeTensor(end: Int = 4, shape: String = "1"): ByteArray {
+    val header = """{"weight":{"dtype":"F32","shape":[$shape],"data_offsets":[0,$end]}}""".encodeToByteArray()
+    return ByteBuffer.allocate(Long.SIZE_BYTES + header.size + 4).order(ByteOrder.LITTLE_ENDIAN)
+        .putLong(header.size.toLong()).put(header).putInt(0).array()
+}
+
+private class MemoryStore : LibraryStore {
+    private val models = MutableStateFlow<List<LibraryModel>>(emptyList())
+    val statuses = mutableListOf<DownloadStatus>()
+    override fun observe() = models.asStateFlow()
+    override suspend fun all() = models.value
+    override suspend fun find(key: String) = models.value.firstOrNull { it.storageKey == key }
+    override suspend fun insert(model: LibraryModel) {
+        check(find(model.storageKey) == null)
+        models.value = models.value + model
+        statuses.add(model.downloadStatus)
+    }
+    override suspend fun update(model: LibraryModel) {
+        models.value = models.value.map { if (it.storageKey == model.storageKey) model else it }
+        statuses.add(model.downloadStatus)
+    }
+    override suspend fun delete(model: LibraryModel) {
+        models.value = models.value.filterNot { it.storageKey == model.storageKey }
+    }
+}
+
+private class FakeScheduler : DownloadScheduler {
+    val states = mutableMapOf<String, ScheduledState>()
+    val enqueued = mutableListOf<String>()
+    override suspend fun enqueue(key: String, id: String) {
+        enqueued.add(id)
+        states[id] = ScheduledState.Waiting
+    }
+    override suspend fun state(id: String) = states[id]
+}

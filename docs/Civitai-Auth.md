@@ -10,7 +10,7 @@ Market → Image에서 계정을 연결한다. PocketMusePrototype은 공개 클
 - 저장 세션 복원, 앱 복귀, 유효 토큰 요청에서 만료까지 60초 이하이면 갱신한다. 앱 프로세스의 Mutex가 갱신과 해제를 직렬화하고 갱신된 쌍의 저장을 완료한 뒤 토큰을 제공한다. 일시적인 네트워크·저장·프로필 오류는 재시도할 수 있다. `invalid_grant`, 갱신 후에도 계속되는 UserInfo 401, 복구할 수 없는 암호화 데이터는 다시 연결이 필요하다. 서버가 갱신을 완료한 뒤 응답을 잃거나 저장 전에 프로세스가 종료되면 이전 쌍은 이미 폐기됐을 수 있다. [Civitai 갱신 계약](https://github.com/civitai/civitai/blob/main/docs/auth/oauth-developer-docs.md#refreshing-tokens)
 - 연결 해제는 `client_id`와 refresh token으로 폐기를 요청한 뒤 로컬 세션을 삭제한다. 네트워크 오류 후에도 로컬 삭제가 완료되며 화면에 폐기를 확인할 수 없었다고 안내한다. Civitai의 HTTP 200은 토큰의 기존 상태를 증명하지 않는다. [Civitai 폐기 계약](https://github.com/civitai/civitai/blob/main/docs/auth/oauth-developer-docs.md#revoking-tokens)
 - 지원 브라우저의 Auth Tab은 HTTPS 콜백을 Activity Result로 전달한다. 앱은 기존 콜백 주소와 `state` 검사를 거쳐 AppAuth가 생성한 S256 verifier로 코드를 교환한다. Activity 재생성에 필요한 동안 verifier는 Android의 Activity 상태에 보존된다. 지원하지 않는 브라우저에서는 AppAuth Custom Tab과 App Link 수신 Activity를 사용한다. Galaxy S20+의 Chrome 156에서 Custom Tab은 웹 콜백 페이지에 머물렀고, Auth Tab 적용 후 같은 기기에서 로그인과 세션 저장을 확인했다. [Chrome Auth Tab](https://developer.chrome.com/docs/android/custom-tabs/guide-auth-tab)
-- 공개 카탈로그는 인증 상태와 독립적으로 조회·페이지 이동한다. 향후 다운로드 계층은 `AuthManager.validAccessToken()`을 호출해 사용할 Bearer 값을 얻는다. 반환값은 일시적으로만 사용하고 로그와 파일에 남기지 않는다. `null`은 현재 사용 가능한 세션이 없음을 의미하며 연결·재시도 안내는 `AuthManager.state`를 따른다. 호출자가 취소되어도 시작된 갱신은 앱 프로세스에서 저장까지 완료한다. 현재 모델 카드의 다운로드 동작은 비활성화되어 있다.
+- 공개 카탈로그는 인증 상태와 독립적으로 조회·페이지 이동한다. 다운로드 Worker는 `AuthManager.validAccessToken()`으로 Bearer 토큰을 얻고 해당 요청 동안 사용한다. `null`이면 `AuthManager.state`로 세션 만료와 일시적 확인 오류를 구분한다. 호출자가 취소되어도 시작된 갱신은 앱 프로세스에서 저장까지 완료한다. [모델 다운로드 계약](Model-Downloads.md)
 
 ## 검증
 

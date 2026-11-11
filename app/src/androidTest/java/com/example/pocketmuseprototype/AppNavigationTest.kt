@@ -2,6 +2,9 @@ package com.example.pocketmuseprototype
 
 import android.text.format.Formatter
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotDisplayed
@@ -19,6 +22,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.runtime.mutableStateOf
 import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.auth.CivitaiProfile
+import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.catalog.CatalogRepository
 import com.example.pocketmuseprototype.catalog.FileDto
 import com.example.pocketmuseprototype.catalog.FileMetadata
@@ -27,6 +31,9 @@ import com.example.pocketmuseprototype.catalog.ModelDto
 import com.example.pocketmuseprototype.catalog.ModelsResponse
 import com.example.pocketmuseprototype.catalog.PageMetadata
 import com.example.pocketmuseprototype.catalog.VersionDto
+import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LibraryItem
+import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
 import java.io.IOException
@@ -37,6 +44,52 @@ import org.junit.Test
 class AppNavigationTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun connectedMarketEnqueuesInPlaceAndLibraryDisplaysProgressCancelAndDelete() {
+        val row = LibraryModel("1_1", 1, 1, 1, "Checkpoint 1", "Version 1", "fixture.safetensors",
+            100_000_000L, null, null, "fixture")
+        val entries = mutableStateOf<List<LibraryItem>>(emptyList())
+        val removed = mutableListOf<DownloadStatus>()
+        launchApp(
+            authState = { AuthState.Connected(CivitaiProfile("fixture", "creator")) },
+            library = { entries.value },
+            onDownload = {
+                check(it.fileId == row.fileId)
+                entries.value = listOf(LibraryItem(row, null))
+            },
+            onRemove = {
+                removed.add(it.downloadStatus)
+                entries.value = emptyList()
+            }
+        ) { page(1..1) }
+
+        val market = compose.onNodeWithText("Market")
+        val library = compose.onNodeWithText("Library")
+        market.performClick()
+        compose.onAllNodesWithContentDescription(string(R.string.market_download))[0].performClick()
+        market.assertIsSelected()
+        library.performClick()
+        compose.onNodeWithText(string(R.string.library_queued)).assertIsDisplayed()
+        val downloading = row.copy(downloadStatus = DownloadStatus.Downloading,
+            downloadedBytes = 25_000_000L, totalBytes = 100_000_000L)
+        compose.runOnIdle { entries.value = listOf(LibraryItem(downloading, null)) }
+        compose.onNode(SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.25f, 0f..1f)
+        )).assertIsDisplayed()
+        market.performClick()
+        library.performClick()
+        compose.onNodeWithText(string(R.string.library_downloading)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        compose.onNodeWithText(string(R.string.library_downloads_empty)).assertIsDisplayed()
+
+        val completed = row.copy(downloadStatus = DownloadStatus.Downloaded)
+        compose.runOnIdle { entries.value = listOf(LibraryItem(completed, null)) }
+        compose.onNodeWithText(string(R.string.library_downloaded), substring = true).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_delete)).performClick()
+        compose.onNodeWithText(string(R.string.library_models_empty)).assertIsDisplayed()
+        compose.runOnIdle { check(removed == listOf(DownloadStatus.Downloading, DownloadStatus.Downloaded)) }
+    }
 
     @Test
     fun marketShowsContentForTheSelectedCategory() {
@@ -53,7 +106,7 @@ class AppNavigationTest {
         compose.onNodeWithText("Version 1").assertIsDisplayed()
         val expectedSize = Formatter.formatShortFileSize(compose.activity, 2_000_000_000L)
         compose.onAllNodesWithText(expectedSize)[0].assertIsDisplayed()
-        compose.onAllNodesWithContentDescription(string(R.string.market_download_unavailable))[0].assertIsNotEnabled()
+        compose.onAllNodesWithContentDescription(string(R.string.market_download_connect))[0].assertIsNotEnabled()
         textModel.assertDoesNotExist()
 
         text.performClick().assertIsSelected()
@@ -196,7 +249,7 @@ class AppNavigationTest {
         market.performClick()
         compose.onNodeWithText("SD 1.5 Checkpoints").assertIsDisplayed()
         checkpoint.assertIsDisplayed()
-        compose.onAllNodesWithContentDescription(string(R.string.market_download_unavailable))[0].assertIsNotEnabled()
+        compose.onAllNodesWithContentDescription(string(R.string.market_download_connect))[0].assertIsNotEnabled()
         compose.onNodeWithText("@creator").performClick()
         compose.onNodeWithText(string(R.string.market_civitai_account)).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.market_civitai_disconnect)).performClick()
@@ -209,6 +262,9 @@ class AppNavigationTest {
         authState: () -> AuthState = { AuthState.Disconnected() },
         onConnect: () -> Unit = {},
         onDisconnect: () -> Unit = {},
+        library: () -> List<LibraryItem> = { emptyList() },
+        onDownload: ((CatalogCheckpoint) -> Unit)? = null,
+        onRemove: (LibraryModel) -> Unit = {},
         fetchPage: suspend (String?) -> ModelsResponse
     ) {
         val viewModel = MarketViewModel(CatalogRepository(fetchPage))
@@ -219,7 +275,10 @@ class AppNavigationTest {
                     onConnect = onConnect,
                     onRetryAuth = {},
                     onDisconnect = onDisconnect,
-                    marketViewModel = viewModel
+                    marketViewModel = viewModel,
+                    library = library(),
+                    onDownloadRequest = onDownload,
+                    onRemoveModel = onRemove
                 )
             }
         }
