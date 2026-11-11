@@ -48,10 +48,9 @@ internal class BundledHqqTemplate(private val context: Context) {
                 val entry = it.jsonObject
                 entry.getValue("name").jsonPrimitive.content to entry.getValue("size").jsonPrimitive.long
             }.also { files ->
-                if (files.isEmpty() || files.size != entries.size || files.any { (name, size) ->
-                        !name.matches(outputName) || size <= 0
-                    }
-                ) throw IOException("Invalid template outputs")
+                if (files.size != entries.size || !files.hasValidOutputEntries()) {
+                    throw IOException("Invalid template outputs")
+                }
             }
         } catch (invalid: SerializationException) {
             throw IOException("Invalid HQQ manifest", invalid)
@@ -75,7 +74,6 @@ internal class BundledHqqTemplate(private val context: Context) {
 
     companion object {
         const val ID = "sd15-hqq-b128-manual-v1"
-        private val outputName = Regex("[A-Za-z0-9._-]+\\.mnn")
         private val hashes = mapOf(
             "graph.bin" to "ea5fe7499768394097d627beb2ce29ec2b96f10ab76c4bd9bdf1fc425a3933ed",
             "manifest.json" to "5ba4e454c0345ad5cb138af374d34af6b0199b41c7b176e5bb70387640f04b80"

@@ -5,9 +5,11 @@
 새 체크포인트의 검증과 원자적 공개가 끝나면 Room이 다운로드 완료와 변환 예약 의도를 함께 기록한다. `model-conversions` 고유 WorkManager 체인이 네트워크 제약 없이 변환을 순차 실행한다. `model-downloads`는 독립적으로 전송을 계속한다. 다운로드 성공은 Room과 원본 파일로 확인한다. v1에서 이미 다운로드한 모델은 Library에서 **변환**을 선택해 예약한다. [WorkManager 작업 연결](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/chain-work)
 
 - Room의 변환 상태는 `NotStarted → Queued → Validating → Converting → Finalizing → Converted`이며 실패와 사용자 취소도 기록한다. 앱 시작·복귀와 WorkManager 상태 변경 시 DB와 WorkManager를 대조한다. 예약 전 프로세스가 사라지면 남은 UUID로 예약하고, 실행이 재개되면 저장된 진행률을 초기화한다. 이미 원자적으로 공개된 출력은 저장된 템플릿 ID와 기대 파일 목록·크기를 확인한 뒤 등록한다.
-- C++ 호출은 작업 스레드에서 실행한다. JNI 콜백은 단계 변경 때와 진행 중 0.5초 이상의 간격으로 이벤트를 전달하며 별도 코루틴에서 Room과 알림을 갱신한다. 사용자 취소와 삭제는 의도를 먼저 기록하고 `requestCancel()`을 전달한다. OS가 Worker를 멈춰도 새 변환과 파일 삭제는 C++ 호출이 반환하고 파일 핸들이 닫힐 때까지 기다린다. 다시 실행할 때 Converter가 소유권을 확인한 `.partial`만 정리한다. 출처가 확인되지 않는 staging은 보존하며 새 시도는 별도 경로를 사용한다. [CoroutineWorker 중단 계약](https://developer.android.com/develop/background-work/background-tasks/persistent/threading/coroutineworker)
+- C++ 호출은 작업 스레드에서 실행한다. JNI 콜백은 단계 변경 때와 진행 중 0.5초 이상의 간격으로 이벤트를 전달하며 별도 코루틴에서 Room과 알림을 갱신한다. 사용자 취소와 삭제는 의도를 먼저 기록하고 `requestCancel()`을 전달한다. OS가 Worker를 멈춰도 새 변환과 파일 삭제는 C++ 호출이 반환하고 파일 핸들이 닫힐 때까지 기다린다. 다시 실행할 때 Converter가 소유권을 확인한 `.partial`만 정리한다. 각 변환 시도에는 별도의 UUID 경로를 할당한다. [CoroutineWorker 중단 계약](https://developer.android.com/develop/background-work/background-tasks/persistent/threading/coroutineworker)
 - 변환은 HQQ W8 B128, 청크 1 MiB, HQQ 보정 20회, 스레드 4개를 사용한다. 저장소의 사용 가능 공간을 manifest의 출력 크기 합과 비교한다. 공간은 예약되지 않으므로 Converter의 쓰기·공간 오류도 기록한다. 변환 실패나 취소 뒤 원본은 Library에서 다시 사용할 수 있다.
 - Runtime이 사용할 출력 경로는 앱 전용 외부 저장소의 `models/{storageKey}/converted/{conversionWorkId}/`다. `Converted` 행의 `conversionTemplateId`, `conversionFiles`(이름 → 바이트 수), `conversionHashes`(이름 → SHA-256)가 출력 계약이다. 앱 재시작 후 해시를 대조하고 같은 프로세스에서는 파일 크기 및 변경 시각을 확인해 필요한 경우 다시 해시한다. Library의 완료 표시는 HQQ 변환 단계에 해당한다.
+- 이전 UUID의 staging 정리가 실패하면 해당 오류 코드를 기록하고 새 변환을 시작하기 전에 멈춘다. Converter가 소유권을 확인할 수 없는 파일과 원본은 보존한다. 변환 재시도에서 정리를 다시 시도한다. 삭제 중 정리가 실패하면 `Deleting` 행과 원본을 유지하며, 이후 reconcile에서 정리와 삭제를 다시 시도한다.
+- 저장된 출력 메타데이터는 하나 이상의 안전한 `.mnn` 파일 이름과 양의 정수 바이트 수로 구성된 JSON 객체여야 한다. 잘못된 메타데이터는 해당 모델의 `OUTPUT_INVALID`로 기록한다. 다른 모델의 복구는 계속되며 해당 모델은 보존된 원본으로 다시 변환할 수 있다.
 
 ### Checkpoints
 
@@ -39,6 +41,8 @@
 ## WorkManager 연동
 
 `ConversionWorker`에서 앱 소유 입력과 출력 경로를 확정하고 작업 스레드에서 요청을 실행한다. Worker 중단이 시작될 때 `requestCancel()`을 전달하고, `run()`이 반환할 때까지 파일이나 작업 소유권을 해제하지 않는다. 반환된 상태·오류로 완료와 재시도를 결정한다. 프로세스 종료 후 다시 실행할 때는 소유가 확인된 `.partial`을 정리하고 새 요청으로 처음부터 변환한다. 진행 콜백의 상태는 Worker가 알림·영속 상태에 전달한다. [장시간 Worker](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running)
+
+현재 `setForeground()`의 `IllegalStateException`과 `SecurityException`은 `INTERRUPTED`로 기록한다. 향후에는 포그라운드 시작 거부 예외의 유형과 API 31+에서 제공되는 WorkManager 중단 사유를 기록해 일시적인 OS 실행 제한을 식별할 수 있다. 권한·서비스 설정 오류는 해당 설정에서 확인하고, 텐서·템플릿 불일치는 Converter의 구조화된 오류로 진단한다. [포그라운드 시작 제한](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start) · [WorkManager 중단 사유](https://developer.android.com/reference/androidx/work/ListenableWorker#getStopReason())
 
 ## 검증 기록
 

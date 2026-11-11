@@ -10,6 +10,7 @@ import com.example.pocketmuseprototype.conversion.ConversionRequest
 import com.example.pocketmuseprototype.conversion.ConversionStage
 import com.example.pocketmuseprototype.conversion.ConversionStatus
 import com.example.pocketmuseprototype.conversion.HqqTemplate
+import com.example.pocketmuseprototype.conversion.decodeOutputFiles
 import com.example.pocketmuseprototype.conversion.outputAttributes
 import com.example.pocketmuseprototype.conversion.sha256
 import java.io.File
@@ -425,19 +426,19 @@ internal class ModelDownloads(
     }
 
     private suspend fun reconcileOutput(model: LibraryModel) {
-        val hashes = try {
-            checkOutput(model)
+        val wasConverted = model.conversionStatus == ModelConversionStatus.Converted
+        val (hashes, error) = try {
+            checkOutput(model) to if (wasConverted) "OUTPUT_INVALID" else "INTERRUPTED"
+        } catch (failure: ConversionFailure) {
+            null to failure.code
         } catch (_: IOException) {
             return
         }
         commands.withLock {
             // A delete or retry can win while a checksum is being read.
             if (convertingKey == model.storageKey || store.find(model.storageKey) != model) return@withLock
-            if (model.conversionStatus == ModelConversionStatus.Converted) {
-                if (hashes == null) conversionFailed(model, "OUTPUT_INVALID")
-            } else {
-                if (hashes != null) converted(model, hashes) else conversionFailed(model, "INTERRUPTED")
-            }
+            if (hashes == null) conversionFailed(model, error)
+            else if (!wasConverted) converted(model, hashes)
         }
     }
 
@@ -522,7 +523,8 @@ internal class ModelDownloads(
         Files.createDirectories(parent.toPath())
         val cleanup = storage.cleanupStaging(output)
         if (cleanup != ConversionErrorCode.NONE) throw ConversionFailure(cleanup.name)
-        storage.cleanupRetiredStaging(key, output)
+        val retiredCleanup = storage.cleanupRetiredStaging(key, output)
+        if (retiredCleanup != ConversionErrorCode.NONE) throw ConversionFailure(retiredCleanup.name)
         if (parent.usableSpace < hqq.files.values.sum()) throw ConversionFailure("INSUFFICIENT_SPACE")
         val request = ConversionRequest(ConversionOptions(checkpoint, hqq.directory, output, threadCount = 4))
         val prepared = commands.withLock {
@@ -603,7 +605,8 @@ internal class ModelDownloads(
     private fun checkOutput(model: LibraryModel): String? {
         val id = model.conversionWorkId ?: return null
         if (model.conversionTemplateId == null) return null
-        val expected = model.conversionFiles?.let { Json.decodeFromString<Map<String, Long>>(it) } ?: return null
+        val files = model.conversionFiles ?: return null
+        val expected = decodeOutputFiles(files) ?: throw ConversionFailure("OUTPUT_INVALID")
         val output = storage.conversionOutput(model.storageKey, id)
         val attributes = outputAttributes(output, expected) ?: return null
         val timestamps = attributes.mapValues { it.value.lastModifiedTime() }
