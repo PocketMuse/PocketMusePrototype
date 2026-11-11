@@ -3,6 +3,7 @@ package com.example.pocketmuseprototype
 import android.text.format.Formatter
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
@@ -15,6 +16,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.runtime.mutableStateOf
+import com.example.pocketmuseprototype.auth.AuthState
+import com.example.pocketmuseprototype.auth.CivitaiProfile
 import com.example.pocketmuseprototype.catalog.CatalogRepository
 import com.example.pocketmuseprototype.catalog.FileDto
 import com.example.pocketmuseprototype.catalog.FileMetadata
@@ -87,14 +91,14 @@ class AppNavigationTest {
         market.performClick()
         compose.onNodeWithText("Checkpoint 1").assertIsDisplayed()
 
-        grid.performScrollToIndex(8)
+        grid.performScrollToIndex(9)
         compose.onNodeWithText(string(R.string.market_loading_more)).assertIsDisplayed()
         response.completeExceptionally(IOException("Page unavailable"))
         compose.onNodeWithText(string(R.string.market_load_more_error)).assertIsDisplayed()
         compose.onNodeWithText("Checkpoint 8").assertIsDisplayed()
         compose.onNodeWithText(string(R.string.market_retry)).performClick()
 
-        grid.performScrollToIndex(10)
+        grid.performScrollToIndex(11)
         val scrolledCard = compose.onNodeWithText("Checkpoint 11")
         scrolledCard.assertIsDisplayed()
         market.assertIsDisplayed().assertIsSelected()
@@ -107,7 +111,7 @@ class AppNavigationTest {
         market.performClick()
         scrolledCard.assertIsDisplayed()
         compose.onNodeWithText("Checkpoint 1").assertIsNotDisplayed()
-        grid.performScrollToIndex(16)
+        grid.performScrollToIndex(17)
         compose.onNodeWithText(string(R.string.market_end)).assertIsDisplayed()
         compose.runOnIdle { check(requests == listOf(null, "next", "next")) }
     }
@@ -165,11 +169,58 @@ class AppNavigationTest {
         compose.onNodeWithText("A moonlit garden").assertExists()
     }
 
-    private fun launchApp(fetchPage: suspend (String?) -> ModelsResponse) {
+    @Test
+    fun marketAccountChangesWithoutReloadingThePublicCatalog() {
+        val account = mutableStateOf<AuthState>(AuthState.Disconnected())
+        var requests = 0
+        launchApp(
+            authState = { account.value },
+            onConnect = { account.value = AuthState.Connecting },
+            onDisconnect = { account.value = AuthState.Disconnected() }
+        ) {
+            requests++
+            page(1..1)
+        }
+        val market = compose.onNodeWithText("Market")
+        val checkpoint = compose.onNodeWithText("Checkpoint 1")
+        val connect = compose.onNodeWithText(string(R.string.market_civitai_connect))
+        market.performClick()
+        checkpoint.assertIsDisplayed()
+        connect.assertIsEnabled().performClick()
+        compose.onNodeWithText(string(R.string.market_civitai_connecting)).assertIsDisplayed()
+        connect.assertDoesNotExist()
+        checkpoint.assertIsDisplayed()
+
+        compose.runOnIdle { account.value = AuthState.Connected(CivitaiProfile("42", "creator")) }
+        compose.onNodeWithText("Library").performClick()
+        market.performClick()
+        compose.onNodeWithText("SD 1.5 Checkpoints").assertIsDisplayed()
+        checkpoint.assertIsDisplayed()
+        compose.onAllNodesWithContentDescription(string(R.string.market_download_unavailable))[0].assertIsNotEnabled()
+        compose.onNodeWithText("@creator").performClick()
+        compose.onNodeWithText(string(R.string.market_civitai_account)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.market_civitai_disconnect)).performClick()
+        connect.assertIsEnabled()
+        checkpoint.assertIsDisplayed()
+        compose.runOnIdle { check(requests == 1) }
+    }
+
+    private fun launchApp(
+        authState: () -> AuthState = { AuthState.Disconnected() },
+        onConnect: () -> Unit = {},
+        onDisconnect: () -> Unit = {},
+        fetchPage: suspend (String?) -> ModelsResponse
+    ) {
         val viewModel = MarketViewModel(CatalogRepository(fetchPage))
         compose.setContent {
             PocketMusePrototypeTheme {
-                PocketMuseApp(marketViewModel = viewModel)
+                PocketMuseApp(
+                    authState = authState(),
+                    onConnect = onConnect,
+                    onRetryAuth = {},
+                    onDisconnect = onDisconnect,
+                    marketViewModel = viewModel
+                )
             }
         }
     }
