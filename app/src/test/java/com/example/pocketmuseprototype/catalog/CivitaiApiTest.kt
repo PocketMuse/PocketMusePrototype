@@ -31,12 +31,14 @@ class CivitaiApiTest {
         }
         val page = api.models("123|a+b&c")
         assertEquals("789|111", page.metadata.nextCursor)
+        val model = page.items.single()
+        assertEquals("Standard", model.modelVersions?.single()?.baseModelType)
         assertEquals(
             CatalogCheckpoint(
                 11, "Sample", 22, "v1", 33, "sample.safetensors", 1_953_125.25,
                 "https://example.test/download/22", "TESTHASH", "https://example.test/cover.jpeg"
             ),
-            page.items.single().selectCheckpoint()
+            model.selectCheckpoint()
         )
     }
 
@@ -81,7 +83,7 @@ class CivitaiApiTest {
                 "id": 11, "name": "Sample", "type": "Checkpoint", "availability": "Public",
                 "description": "Ignored extra field",
                 "modelVersions": [{
-                  "id": 22, "name": "v1", "baseModel": "SD 1.5",
+                  "id": 22, "name": "v1", "baseModel": "SD 1.5", "baseModelType": "Standard",
                   "publishedAt": "2024-01-01T00:00:00.123Z",
                   "files": [{
                     "id": 33, "name": "sample.safetensors", "type": "Model", "sizeKB": 1953125.25,

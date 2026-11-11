@@ -19,6 +19,30 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CivitaiCatalogTest {
     @Test
+    fun selectsStandardSd15Checkpoint() {
+        assertEquals(1L, checkpoint(1).selectCheckpoint()?.modelVersionId)
+    }
+
+    @Test
+    fun rejectsSd15VersionsWithUnsupportedMissingOrUnknownBaseModelType() {
+        val model = checkpoint(1)
+        val standard = version(1, "2024-01-01T00:00:00Z")
+        for (type in listOf("Inpainting", "Refiner", "Pix2Pix", null, "Unknown")) {
+            val version = standard.copy(baseModelType = type)
+            assertNull("baseModelType=$type", model.copy(modelVersions = listOf(version)).selectCheckpoint())
+        }
+    }
+
+    @Test
+    fun rejectsModelWhenLatestSd15VersionIsInpaintingEvenIfOlderStandardExists() {
+        val older = version(1, "2024-01-01T00:00:00Z")
+        val latest = version(2, "2024-01-02T00:00:00Z").copy(baseModelType = "Inpainting")
+        val model = checkpoint(1).copy(modelVersions = listOf(older, latest))
+
+        assertNull(model.selectCheckpoint())
+    }
+
+    @Test
     fun choosesFp16BeforePrimaryFp32AndBreaksTiesByPrimaryThenId() {
         val model = checkpoint(1, files = listOf(
             file(1, fp = "fp32", primary = true),
@@ -186,7 +210,14 @@ class CivitaiCatalogTest {
         ))
 
     private fun version(id: Long, date: String) =
-        VersionDto(id, "v$id", "SD 1.5", date, listOf(file(id)))
+        VersionDto(
+            id = id,
+            name = "v$id",
+            baseModel = "SD 1.5",
+            baseModelType = "Standard",
+            publishedAt = date,
+            files = listOf(file(id))
+        )
 
     private fun file(id: Long, fp: String = "fp16", primary: Boolean = false) =
         FileDto(

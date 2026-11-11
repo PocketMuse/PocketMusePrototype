@@ -26,6 +26,7 @@ internal fun ModelDto.selectCheckpoint(): CatalogCheckpoint? {
         .map { it to (it.publishedAt.toInstantOrNull() ?: return null) }
         .maxWithOrNull(compareBy({ it.second }, { it.first.id }))
         ?.first ?: return null
+    if (version.baseModelType != "Standard") return null
     val versionId = version.id?.takeIf { it > 0 } ?: return null
     val versionName = version.name?.takeIf { it.isNotBlank() } ?: return null
 

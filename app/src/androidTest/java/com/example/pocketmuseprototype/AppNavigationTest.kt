@@ -183,7 +183,14 @@ class AppNavigationTest {
                 id, "checkpoint$id.safetensors", "Model", 1_953_125.0,
                 "https://example.test/models/$id", metadata = FileMetadata("SafeTensor", "pruned", "fp16")
             )
-            val version = VersionDto(id, "Version $id", "SD 1.5", "2024-01-01T00:00:00Z", listOf(file))
+            val version = VersionDto(
+                id = id,
+                name = "Version $id",
+                baseModel = "SD 1.5",
+                baseModelType = "Standard",
+                publishedAt = "2024-01-01T00:00:00Z",
+                files = listOf(file)
+            )
             ModelDto(id, "Checkpoint $id", "Checkpoint", "Public", modelVersions = listOf(version))
         }
         return ModelsResponse(models, PageMetadata(nextCursor))

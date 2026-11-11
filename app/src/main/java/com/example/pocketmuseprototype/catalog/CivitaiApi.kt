@@ -71,6 +71,7 @@ internal data class VersionDto(
     val id: Long? = null,
     val name: String? = null,
     val baseModel: String? = null,
+    val baseModelType: String? = null,
     val publishedAt: String? = null,
     val files: List<FileDto>? = null,
     val images: List<ImageDto>? = null
