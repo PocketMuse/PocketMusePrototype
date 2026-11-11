@@ -1,28 +1,47 @@
 package com.example.pocketmuseprototype.download
 
 import android.database.sqlite.SQLiteFullException
+import android.util.Log
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
+import com.example.pocketmuseprototype.conversion.ConversionErrorCode
+import com.example.pocketmuseprototype.conversion.ConversionOptions
+import com.example.pocketmuseprototype.conversion.ConversionProgress
+import com.example.pocketmuseprototype.conversion.ConversionRequest
+import com.example.pocketmuseprototype.conversion.ConversionStage
+import com.example.pocketmuseprototype.conversion.ConversionStatus
+import com.example.pocketmuseprototype.conversion.HqqTemplate
+import com.example.pocketmuseprototype.conversion.outputAttributes
+import com.example.pocketmuseprototype.conversion.sha256
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 
 internal enum class ScheduledState { Waiting, Running, Finished }
 
-internal interface DownloadScheduler {
+internal interface ModelWorkScheduler {
     suspend fun enqueue(key: String, id: String)
     suspend fun state(id: String): ScheduledState?
 }
@@ -35,10 +54,12 @@ internal data class LibraryItem(val model: LibraryModel, val thumbnail: File?)
 internal class ModelDownloads(
     private val store: LibraryStore,
     private val storage: ModelStorage,
-    private val scheduler: DownloadScheduler,
+    private val scheduler: ModelWorkScheduler,
     private val token: suspend () -> String,
     private val transfer: CivitaiTransfer,
-    private val writeThumbnail: (ByteArray, File) -> Unit
+    private val writeThumbnail: (ByteArray, File) -> Unit,
+    private val conversionScheduler: ModelWorkScheduler,
+    private val template: () -> HqqTemplate
 ) {
     val models = store.observe().map { models ->
         models.map { model ->
@@ -51,8 +72,15 @@ internal class ModelDownloads(
         }
     }.flowOn(Dispatchers.IO)
     private val commands = Mutex()
+    private val reconciliation = Mutex()
     private val transfers = Mutex()
+    private val conversions = Mutex()
     private var active: Pair<String, Job>? = null
+    private var convertingKey: String? = null
+    private var conversionRequest: ConversionRequest? = null
+    private data class CheckedOutput(val timestamps: Map<String, FileTime>, val hashes: String)
+
+    private val checkedOutputs = ConcurrentHashMap<String, CheckedOutput>()
 
     suspend fun enqueue(candidate: CatalogCheckpoint): EnqueueResult = withContext(Dispatchers.IO + NonCancellable) {
         commands.withLock {
@@ -84,37 +112,45 @@ internal class ModelDownloads(
                     if (job == null) deleteFiles(current) else job.cancel()
                 }
                 !model.downloadStatus.pending &&
-                    current.downloadStatus in setOf(DownloadStatus.Downloaded, DownloadStatus.Failed) -> {
-                    store.update(current.copy(downloadStatus = DownloadStatus.Deleting))
-                    deleteFiles(current)
+                    current.downloadStatus in setOf(DownloadStatus.Downloaded, DownloadStatus.Failed, DownloadStatus.Deleting) -> {
+                    val deleting = current.copy(downloadStatus = DownloadStatus.Deleting, errorCode = null)
+                    store.update(deleting)
+                    if (convertingKey == current.storageKey) conversionRequest?.requestCancel()
+                    else deleteFiles(deleting)
                 }
             }
         }
     }
 
     suspend fun reconcile() = withContext(Dispatchers.IO) {
-        commands.withLock {
-            for (model in store.all()) {
-                val key = model.storageKey
-                if (active?.first == key) continue
-                when (model.downloadStatus) {
-                    DownloadStatus.Cancelling, DownloadStatus.Deleting -> deleteFiles(model)
-                    DownloadStatus.Downloaded -> try {
-                        storage.clearPartial(key)
-                        if (!published(model)) fail(model, DownloadError.MissingFile)
-                    } catch (_: IOException) {
-                        // The volume can be temporarily unavailable. Recheck on the next foreground visit.
-                    }
-                    DownloadStatus.Failed -> if (model.errorCode != DownloadError.Cleanup) {
-                        try {
-                            storage.clearSource(key)
+        reconciliation.withLock {
+            val outputs = commands.withLock {
+                val checks = mutableListOf<LibraryModel>()
+                for (model in store.all()) {
+                    val key = model.storageKey
+                    if (active?.first == key || convertingKey == key) continue
+                    when (model.downloadStatus) {
+                        DownloadStatus.Cancelling, DownloadStatus.Deleting -> deleteFiles(model)
+                        DownloadStatus.Downloaded -> try {
+                            storage.clearPartial(key)
+                            if (!published(model)) fail(model, DownloadError.MissingFile)
+                            else if (reconcileConversion(model)) checks += model
                         } catch (_: IOException) {
-                            fail(model, DownloadError.Cleanup)
+                            // The volume can be temporarily unavailable. Recheck on the next foreground visit.
                         }
+                        DownloadStatus.Failed -> if (model.errorCode != DownloadError.Cleanup) {
+                            try {
+                                storage.clearSource(key)
+                            } catch (_: IOException) {
+                                fail(model, DownloadError.Cleanup)
+                            }
+                        }
+                        else -> restorePending(model)
                     }
-                    else -> restorePending(model)
                 }
+                checks
             }
+            for (model in outputs) reconcileOutput(model)
         }
     }
 
@@ -167,8 +203,7 @@ internal class ModelDownloads(
                             ?: return@withLock null
                         async(start = CoroutineStart.LAZY) {
                             if (model.downloadStatus == DownloadStatus.Verifying && published(model)) {
-                                updatePending(key) { it.copy(downloadStatus = DownloadStatus.Downloaded,
-                                    fileSize = checkNotNull(it.totalBytes)) }
+                                commands.withLock { complete(pending(key)) }
                                 return@async
                             }
                             foreground(model)
@@ -290,9 +325,11 @@ internal class ModelDownloads(
         try {
             storage.delete(model.storageKey)
         } catch (_: IOException) {
-            fail(model, DownloadError.Cleanup)
+            val failed = model.copy(downloadStatus = DownloadStatus.Deleting, errorCode = DownloadError.Cleanup)
+            if (failed != model) store.update(failed)
             return
         }
+        model.conversionWorkId?.let(checkedOutputs::remove)
         store.delete(model)
     }
 
@@ -303,7 +340,7 @@ internal class ModelDownloads(
 
     private suspend fun complete(model: LibraryModel) {
         val bytes = checkNotNull(model.totalBytes)
-        store.update(model.copy(downloadStatus = DownloadStatus.Downloaded, fileSize = bytes))
+        queueConversion(model.copy(downloadStatus = DownloadStatus.Downloaded, fileSize = bytes))
     }
 
     private suspend fun reset(model: LibraryModel): LibraryModel =
@@ -313,4 +350,307 @@ internal class ModelDownloads(
     private suspend fun fail(model: LibraryModel, error: DownloadError) {
         store.update(model.copy(downloadStatus = DownloadStatus.Failed, errorCode = error))
     }
+
+    suspend fun startConversion(model: LibraryModel) = withContext(Dispatchers.IO + NonCancellable) {
+        commands.withLock {
+            val current = store.find(model.storageKey) ?: return@withLock
+            if (current.workId != model.workId || current.conversionWorkId != model.conversionWorkId ||
+                current.downloadStatus != DownloadStatus.Downloaded || !current.conversionStatus.canStart ||
+                convertingKey == current.storageKey
+            ) return@withLock
+            try {
+                current.conversionWorkId?.let { storage.discardConversion(current.storageKey, it) }
+            } catch (_: IOException) {
+                conversionFailed(current, ConversionErrorCode.CLEANUP_FAILED.name)
+                return@withLock
+            }
+            queueConversion(current)
+        }
+    }
+
+    suspend fun cancelConversion(model: LibraryModel) = withContext(Dispatchers.IO + NonCancellable) {
+        commands.withLock {
+            val current = store.find(model.storageKey) ?: return@withLock
+            if (current.conversionWorkId != model.conversionWorkId ||
+                current.downloadStatus != DownloadStatus.Downloaded || !current.conversionStatus.pending
+            ) return@withLock
+            val cancelling = current.copy(
+                conversionStatus = ModelConversionStatus.Cancelling,
+                conversionProgress = null
+            )
+            store.update(cancelling)
+            if (convertingKey == current.storageKey) conversionRequest?.requestCancel()
+            else finishCancellation(cancelling)
+        }
+    }
+
+    private suspend fun queueConversion(model: LibraryModel) {
+        model.conversionWorkId?.let(checkedOutputs::remove)
+        val queued = model.copy(
+            conversionStatus = ModelConversionStatus.Queued,
+            conversionWorkId = UUID.randomUUID().toString(),
+            conversionProgress = null,
+            conversionErrorCode = null,
+            conversionTemplateId = null,
+            conversionFiles = null,
+            conversionHashes = null
+        )
+        store.update(queued)
+        scheduleConversion(queued)
+    }
+
+    private suspend fun scheduleConversion(model: LibraryModel) {
+        try {
+            conversionScheduler.enqueue(model.storageKey, checkNotNull(model.conversionWorkId))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            conversionFailed(model, "SCHEDULING")
+        }
+    }
+
+    /** Returns true when the output needs to be checked after releasing the command lock. */
+    private suspend fun reconcileConversion(model: LibraryModel): Boolean {
+        when {
+            model.conversionStatus == ModelConversionStatus.Converted -> return true
+            model.conversionStatus == ModelConversionStatus.Cancelling -> finishCancellation(model)
+            model.conversionStatus.pending -> when (conversionScheduler.state(checkNotNull(model.conversionWorkId))) {
+                null -> scheduleConversion(resetConversionProgress(model))
+                ScheduledState.Finished -> return true
+                ScheduledState.Waiting -> resetConversionProgress(model)
+                ScheduledState.Running -> Unit
+            }
+        }
+        return false
+    }
+
+    private suspend fun reconcileOutput(model: LibraryModel) {
+        val hashes = try {
+            checkOutput(model)
+        } catch (_: IOException) {
+            return
+        }
+        commands.withLock {
+            // A delete or retry can win while a checksum is being read.
+            if (convertingKey == model.storageKey || store.find(model.storageKey) != model) return@withLock
+            if (model.conversionStatus == ModelConversionStatus.Converted) {
+                if (hashes == null) conversionFailed(model, "OUTPUT_INVALID")
+            } else {
+                if (hashes != null) converted(model, hashes) else conversionFailed(model, "INTERRUPTED")
+            }
+        }
+    }
+
+    private suspend fun resetConversionProgress(model: LibraryModel): LibraryModel =
+        model.copy(conversionStatus = ModelConversionStatus.Queued, conversionProgress = null)
+            .also { if (it != model) store.update(it) }
+
+    suspend fun runConversion(
+        key: String,
+        id: String,
+        foreground: suspend (LibraryModel) -> Unit,
+        notification: (LibraryModel) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        // WorkManager can release the next worker before a stopped native call has returned.
+        conversions.withLock {
+            val model = commands.withLock {
+                val current = pendingConversion(key, id) ?: return@withLock null
+                convertingKey = key
+                current
+            } ?: return@withLock
+            try {
+                convert(model, id, foreground, notification)
+            } catch (error: ConversionFailure) {
+                commands.withLock { pendingConversion(key, id)?.let { conversionFailed(it, error.code) } }
+            } catch (_: SQLiteFullException) {
+                commands.withLock { pendingConversion(key, id)?.let { conversionFailed(it, "INSUFFICIENT_SPACE") } }
+            } catch (_: IOException) {
+                commands.withLock { pendingConversion(key, id)?.let { conversionFailed(it, "FILE_IO") } }
+            } catch (_: LinkageError) {
+                commands.withLock { pendingConversion(key, id)?.let { conversionFailed(it, "NATIVE_UNAVAILABLE") } }
+            } finally {
+                val stopped = !currentCoroutineContext().isActive
+                withContext(NonCancellable) {
+                    val check = commands.withLock {
+                        conversionRequest = null
+                        convertingKey = null
+                        val current = store.find(key) ?: return@withLock null
+                        when {
+                            current.downloadStatus == DownloadStatus.Deleting -> deleteFiles(current)
+                            current.conversionStatus == ModelConversionStatus.Cancelling -> finishCancellation(current)
+                            stopped && current.conversionStatus.pending -> if (reconcileConversion(current)) {
+                                return@withLock current
+                            }
+                        }
+                        null
+                    }
+                    if (check != null) reconcileOutput(check)
+                }
+            }
+        }
+    }
+
+    private suspend fun convert(
+        model: LibraryModel,
+        id: String,
+        foreground: suspend (LibraryModel) -> Unit,
+        notification: (LibraryModel) -> Unit
+    ) {
+        val key = model.storageKey
+        val validating = commands.withLock {
+            val current = pendingConversion(key, id) ?: return
+            current.copy(conversionStatus = ModelConversionStatus.Validating, conversionProgress = null)
+                .also { store.update(it) }
+        }
+        val checkpoint = storage.checkpoint(key)
+        if (!published(model) || !checkpoint.hasCheckpointHeader()) throw ConversionFailure("SOURCE_INVALID")
+        val output = storage.conversionOutput(key, id)
+        val recovered = checkOutput(model)
+        if (recovered != null) {
+            commands.withLock { pendingConversion(key, id)?.let { converted(it, recovered) } }
+            return
+        }
+        foreground(validating)
+        // A previous attempt at this work ID may have published an invalid final directory.
+        storage.discardConversion(key, id)
+        val hqq = try {
+            template()
+        } catch (_: IOException) {
+            throw ConversionFailure("TEMPLATE_INVALID")
+        }
+        val parent = checkNotNull(output.parentFile)
+        Files.createDirectories(parent.toPath())
+        val cleanup = storage.cleanupStaging(output)
+        if (cleanup != ConversionErrorCode.NONE) throw ConversionFailure(cleanup.name)
+        storage.cleanupRetiredStaging(key, output)
+        if (parent.usableSpace < hqq.files.values.sum()) throw ConversionFailure("INSUFFICIENT_SPACE")
+        val request = ConversionRequest(ConversionOptions(checkpoint, hqq.directory, output, threadCount = 4))
+        val prepared = commands.withLock {
+            val current = pendingConversion(key, id) ?: return
+            current.copy(conversionTemplateId = hqq.id, conversionFiles = Json.encodeToString(hqq.files))
+                .also {
+                    store.update(it)
+                    conversionRequest = request
+                }
+        }
+        val result = runNative(request) { progress ->
+            val status = when (progress.stage) {
+                ConversionStage.Validating -> ModelConversionStatus.Validating
+                ConversionStage.Converting -> ModelConversionStatus.Converting
+                ConversionStage.Finalizing, ConversionStage.Completed -> ModelConversionStatus.Finalizing
+            }
+            commands.withLock {
+                val current = pendingConversion(key, id) ?: return@withLock
+                val percent = if (status == ModelConversionStatus.Converting) {
+                    (progress.fraction.coerceIn(0.0, 1.0) * 100).toInt()
+                } else null
+                val updated = current.copy(conversionStatus = status, conversionProgress = percent)
+                if (updated != current) {
+                    store.update(updated)
+                    notification(updated)
+                }
+            }
+        }
+        when (result.status) {
+            ConversionStatus.Cancelled -> throw ConversionFailure("INTERRUPTED")
+            ConversionStatus.Failed -> throw ConversionFailure(result.errorCode.name)
+            ConversionStatus.Succeeded -> Unit
+        }
+        if (result.files.associate { it.name to it.sizeBytes } != hqq.files) throw ConversionFailure("OUTPUT_INVALID")
+        Log.d("ModelConversion", "Native conversion: ${result.elapsedMillis} ms, HQQ: ${result.hqqComputeMillis} ms")
+        commands.withLock {
+            val current = pendingConversion(key, id) ?: return
+            val finalizing = current.copy(conversionStatus = ModelConversionStatus.Finalizing, conversionProgress = null)
+            store.update(finalizing)
+            notification(finalizing)
+        }
+        val hashes = checkOutput(prepared) ?: throw ConversionFailure("OUTPUT_INVALID")
+        commands.withLock { pendingConversion(key, id)?.let { converted(it, hashes) } }
+    }
+
+    private suspend fun runNative(request: ConversionRequest, publish: suspend (ConversionProgress) -> Unit) =
+        coroutineScope {
+            val progress = Channel<ConversionProgress>(Channel.CONFLATED)
+            val updates = launch { for (value in progress) publish(value) }
+            val native = async {
+                var stage: ConversionStage? = null
+                var lastUpdate = 0L
+                request.run { value ->
+                    val now = System.nanoTime()
+                    if (stage != value.stage || now - lastUpdate >= PROGRESS_INTERVAL_NS) {
+                        stage = value.stage
+                        lastUpdate = now
+                        progress.trySend(value)
+                    }
+                }
+            }
+            try {
+                native.await()
+            } finally {
+                request.requestCancel()
+                withContext(NonCancellable) {
+                    native.join()
+                    updates.cancelAndJoin()
+                }
+            }
+        }
+
+    private suspend fun pendingConversion(key: String, id: String): LibraryModel? =
+        store.find(key)?.takeIf {
+            it.downloadStatus == DownloadStatus.Downloaded && it.conversionWorkId == id && it.conversionStatus.pending
+        }
+
+    private fun checkOutput(model: LibraryModel): String? {
+        val id = model.conversionWorkId ?: return null
+        if (model.conversionTemplateId == null) return null
+        val expected = model.conversionFiles?.let { Json.decodeFromString<Map<String, Long>>(it) } ?: return null
+        val output = storage.conversionOutput(model.storageKey, id)
+        val attributes = outputAttributes(output, expected) ?: return null
+        val timestamps = attributes.mapValues { it.value.lastModifiedTime() }
+        val recorded = model.conversionHashes
+        if (recorded != null && checkedOutputs[id] == CheckedOutput(timestamps, recorded)) return recorded
+        val hashes = Json.encodeToString(expected.mapValues { (name, _) -> File(output, name).sha256() })
+        if (recorded != null && recorded != hashes) return null
+        if (outputAttributes(output, expected)?.mapValues { it.value.lastModifiedTime() } != timestamps) return null
+        checkedOutputs[id] = CheckedOutput(timestamps, hashes)
+        return hashes
+    }
+
+    private suspend fun converted(model: LibraryModel, hashes: String) {
+        store.update(model.copy(
+            conversionStatus = ModelConversionStatus.Converted,
+            conversionProgress = 100,
+            conversionErrorCode = null,
+            conversionHashes = hashes
+        ))
+    }
+
+    private suspend fun finishCancellation(model: LibraryModel) {
+        try {
+            val id = checkNotNull(model.conversionWorkId)
+            val cleanup = storage.cleanupStaging(storage.conversionOutput(model.storageKey, id))
+            if (cleanup == ConversionErrorCode.BUSY) return
+            if (cleanup != ConversionErrorCode.NONE) throw ConversionFailure(cleanup.name)
+            storage.discardConversion(model.storageKey, id)
+            store.update(model.copy(conversionStatus = ModelConversionStatus.Cancelled, conversionProgress = null))
+        } catch (error: ConversionFailure) {
+            conversionFailed(model, error.code)
+        } catch (_: IOException) {
+            conversionFailed(model, "CLEANUP_FAILED")
+        } catch (_: LinkageError) {
+            conversionFailed(model, "NATIVE_UNAVAILABLE")
+        }
+    }
+
+    private suspend fun conversionFailed(model: LibraryModel, error: String) {
+        store.update(model.copy(
+            conversionStatus = ModelConversionStatus.Failed,
+            conversionProgress = null,
+            conversionErrorCode = error
+        ))
+    }
 }
+
+internal class ConversionFailure(val code: String) : IOException()
+
+private const val PROGRESS_INTERVAL_NS = 500_000_000L

@@ -1,6 +1,7 @@
 package com.example.pocketmuseprototype.download
 
 import androidx.room.Dao
+import androidx.room.ColumnInfo
 import androidx.room.Database
 import androidx.room.Delete
 import androidx.room.Entity
@@ -9,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 
@@ -27,6 +30,16 @@ internal enum class DownloadError {
 
 internal class DownloadFailure(val code: DownloadError) : IOException()
 
+internal enum class ModelConversionStatus {
+    NotStarted, Queued, Validating, Converting, Finalizing, Converted, Failed, Cancelling, Cancelled;
+
+    val pending: Boolean
+        get() = this == Queued || this == Validating || this == Converting || this == Finalizing
+
+    val canStart: Boolean
+        get() = this == NotStarted || this == Failed || this == Cancelled
+}
+
 @Entity(tableName = "models")
 internal data class LibraryModel(
     @PrimaryKey val storageKey: String,
@@ -43,7 +56,15 @@ internal data class LibraryModel(
     val downloadStatus: DownloadStatus = DownloadStatus.Queued,
     val downloadedBytes: Long = 0,
     val totalBytes: Long? = null,
-    val errorCode: DownloadError? = null
+    val errorCode: DownloadError? = null,
+    @ColumnInfo(defaultValue = "'NotStarted'")
+    val conversionStatus: ModelConversionStatus = ModelConversionStatus.NotStarted,
+    val conversionWorkId: String? = null,
+    val conversionProgress: Int? = null,
+    val conversionErrorCode: String? = null,
+    val conversionTemplateId: String? = null,
+    val conversionFiles: String? = null,
+    val conversionHashes: String? = null
 )
 
 internal interface LibraryStore {
@@ -76,11 +97,22 @@ internal interface LibraryDao : LibraryStore {
     override suspend fun delete(model: LibraryModel)
 }
 
-@Database(entities = [LibraryModel::class], version = 1)
+@Database(entities = [LibraryModel::class], version = 2)
 internal abstract class LibraryDatabase : RoomDatabase() {
     abstract fun models(): LibraryDao
 
     companion object {
         const val NAME = "model-library.db"
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionStatus TEXT NOT NULL DEFAULT 'NotStarted'")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionWorkId TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionProgress INTEGER")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionErrorCode TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionTemplateId TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionFiles TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionHashes TEXT")
+            }
+        }
     }
 }

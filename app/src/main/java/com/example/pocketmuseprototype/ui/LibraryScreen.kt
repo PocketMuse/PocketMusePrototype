@@ -38,15 +38,24 @@ import com.example.pocketmuseprototype.download.DownloadError
 import com.example.pocketmuseprototype.download.DownloadStatus
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
+import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.download.TransferProgress
 
 @Composable
 internal fun LibraryScreen(
     library: List<LibraryItem>,
     onRemove: (LibraryModel) -> Unit,
+    onStartConversion: (LibraryModel) -> Unit,
+    onCancelConversion: (LibraryModel) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val (downloaded, transfers) = library.partition { it.model.downloadStatus == DownloadStatus.Downloaded }
+    val (transfers, downloaded) = library.partition {
+        val model = it.model
+        model.downloadStatus.pending || model.downloadStatus == DownloadStatus.Cancelling ||
+            model.downloadStatus == DownloadStatus.Deleting ||
+            (model.downloadStatus == DownloadStatus.Downloaded &&
+                (model.conversionStatus.pending || model.conversionStatus == ModelConversionStatus.Cancelling))
+    }
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(top = 20.dp, bottom = 16.dp),
@@ -54,11 +63,11 @@ internal fun LibraryScreen(
     ) {
         item { SectionTitle(R.string.library_downloads) }
         if (transfers.isEmpty()) item { EmptySection(R.string.library_downloads_empty) }
-        items(transfers, key = { it.model.storageKey }) { ModelCard(it, onRemove) }
+        items(transfers, key = { it.model.storageKey }) { ModelCard(it, onRemove, onStartConversion, onCancelConversion) }
 
         item { SectionTitle(R.string.library_models, Modifier.padding(top = 16.dp)) }
         if (downloaded.isEmpty()) item { EmptySection(R.string.library_models_empty) }
-        items(downloaded, key = { it.model.storageKey }) { ModelCard(it, onRemove) }
+        items(downloaded, key = { it.model.storageKey }) { ModelCard(it, onRemove, onStartConversion, onCancelConversion) }
     }
 }
 
@@ -82,7 +91,12 @@ private fun EmptySection(@StringRes message: Int) {
 }
 
 @Composable
-private fun ModelCard(item: LibraryItem, onRemove: (LibraryModel) -> Unit) {
+private fun ModelCard(
+    item: LibraryItem,
+    onRemove: (LibraryModel) -> Unit,
+    onStartConversion: (LibraryModel) -> Unit,
+    onCancelConversion: (LibraryModel) -> Unit
+) {
     val model = item.model
     val status = model.downloadStatus
     val context = LocalContext.current
@@ -133,14 +147,16 @@ private fun ModelCard(item: LibraryItem, onRemove: (LibraryModel) -> Unit) {
                         message, style = MaterialTheme.typography.labelLarge,
                         color = if (status == DownloadStatus.Failed) colors.error else colors.onSurfaceVariant
                     )
-                    if (status == DownloadStatus.Failed && model.errorCode != null) {
+                    if (model.errorCode != null) {
                         Text(
                             stringResource(model.errorCode.label), style = MaterialTheme.typography.bodySmall,
                             color = colors.onSurfaceVariant
                         )
                     }
                 }
-                if (status.pending || status == DownloadStatus.Failed || status == DownloadStatus.Downloaded) {
+                if (status.pending || status == DownloadStatus.Failed ||
+                    (status == DownloadStatus.Deleting && model.errorCode != null)
+                ) {
                     TextButton(onClick = { onRemove(model) }) {
                         Text(stringResource(if (status.pending) R.string.library_cancel else R.string.library_delete))
                     }
@@ -149,9 +165,75 @@ private fun ModelCard(item: LibraryItem, onRemove: (LibraryModel) -> Unit) {
             if (status == DownloadStatus.Downloading || status == DownloadStatus.Verifying) {
                 DownloadProgress(TransferProgress(model.downloadedBytes, model.totalBytes))
             }
+            if (status == DownloadStatus.Downloaded) {
+                ConversionDetails(model, onStartConversion, onCancelConversion, onRemove)
+            }
         }
     }
 }
+
+@Composable
+private fun ConversionDetails(
+    model: LibraryModel,
+    onStart: (LibraryModel) -> Unit,
+    onCancel: (LibraryModel) -> Unit,
+    onRemove: (LibraryModel) -> Unit
+) {
+    val status = model.conversionStatus
+    val colors = MaterialTheme.colorScheme
+    val percent = model.conversionProgress
+    val label = if (status == ModelConversionStatus.Converting && percent != null) {
+        stringResource(R.string.library_conversion_percent, percent)
+    } else stringResource(status.label)
+    Text(label, style = MaterialTheme.typography.labelLarge,
+        color = if (status == ModelConversionStatus.Failed) colors.error else colors.onSurfaceVariant)
+    if (status == ModelConversionStatus.Failed) {
+        Text(stringResource(model.conversionErrorCode.conversionErrorLabel), style = MaterialTheme.typography.bodySmall)
+    }
+    if (status.pending) {
+        if (percent == null) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        else LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
+    }
+    if (status != ModelConversionStatus.Cancelling) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (status.canStart) {
+                TextButton(onClick = { onStart(model) }) {
+                    Text(stringResource(if (status == ModelConversionStatus.NotStarted) {
+                        R.string.library_convert
+                    } else R.string.library_convert_retry))
+                }
+            } else if (status.pending) {
+                TextButton(onClick = { onCancel(model) }) { Text(stringResource(R.string.library_cancel)) }
+            }
+            TextButton(onClick = { onRemove(model) }) { Text(stringResource(R.string.library_delete)) }
+        }
+    }
+}
+
+private val ModelConversionStatus.label: Int
+    @StringRes get() = when (this) {
+        ModelConversionStatus.NotStarted -> R.string.library_conversion_not_started
+        ModelConversionStatus.Queued -> R.string.library_conversion_queued
+        ModelConversionStatus.Validating -> R.string.library_conversion_validating
+        ModelConversionStatus.Converting -> R.string.library_converting
+        ModelConversionStatus.Finalizing -> R.string.library_conversion_finalizing
+        ModelConversionStatus.Converted -> R.string.library_converted
+        ModelConversionStatus.Failed -> R.string.library_conversion_failed
+        ModelConversionStatus.Cancelling -> R.string.library_conversion_cancelling
+        ModelConversionStatus.Cancelled -> R.string.library_conversion_cancelled
+    }
+
+private val String?.conversionErrorLabel: Int
+    @StringRes get() = when (this) {
+        "INSUFFICIENT_SPACE" -> R.string.library_error_space
+        "SOURCE_INVALID" -> R.string.library_error_checkpoint
+        "TENSOR_MISMATCH", "INVALID_INPUT", "NON_FINITE_WEIGHT" -> R.string.library_conversion_error_checkpoint
+        "INCOMPATIBLE_TEMPLATE", "TEMPLATE_INVALID" -> R.string.library_conversion_error_template
+        "INTERRUPTED", "SCHEDULING" -> R.string.library_conversion_error_interrupted
+        "OUTPUT_INVALID" -> R.string.library_conversion_error_output
+        "CLEANUP_FAILED", "STALE_OUTPUT" -> R.string.library_conversion_error_cleanup
+        else -> R.string.library_conversion_error_generic
+    }
 
 @Composable
 private fun DownloadProgress(progress: TransferProgress) {

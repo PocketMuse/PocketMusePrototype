@@ -30,7 +30,7 @@ import com.example.pocketmuseprototype.R
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 
-internal class WorkManagerDownloads(private val manager: WorkManager) : DownloadScheduler {
+internal class WorkManagerDownloads(private val manager: WorkManager) : ModelWorkScheduler {
     val changes = manager.getWorkInfosForUniqueWorkFlow(QUEUE)
 
     override suspend fun enqueue(key: String, id: String) {
@@ -42,19 +42,21 @@ internal class WorkManagerDownloads(private val manager: WorkManager) : Download
         manager.enqueueUniqueWork(QUEUE, ExistingWorkPolicy.APPEND_OR_REPLACE, work).await()
     }
 
-    override suspend fun state(id: String): ScheduledState? =
-        manager.getWorkInfoByIdFlow(UUID.fromString(id)).first()?.state?.let {
-            when {
-                it.isFinished -> ScheduledState.Finished
-                it == WorkInfo.State.RUNNING -> ScheduledState.Running
-                else -> ScheduledState.Waiting
-            }
-        }
+    override suspend fun state(id: String) = manager.scheduledState(id)
 
     private companion object {
         const val QUEUE = "model-downloads"
     }
 }
+
+internal suspend fun WorkManager.scheduledState(id: String): ScheduledState? =
+    getWorkInfoByIdFlow(UUID.fromString(id)).first()?.state?.let {
+        when {
+            it.isFinished -> ScheduledState.Finished
+            it == WorkInfo.State.RUNNING -> ScheduledState.Running
+            else -> ScheduledState.Waiting
+        }
+    }
 
 class DownloadWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     private val downloads get() = (applicationContext as PocketMuseApplication).downloads
@@ -101,11 +103,18 @@ internal class DownloadNotifications(private val context: Context, private val n
         val contentIntent = PendingIntent.getActivity(
             context, 0, openLibrary, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val converting = model.downloadStatus == DownloadStatus.Downloaded
         val verifying = model.downloadStatus == DownloadStatus.Verifying
         val progress = TransferProgress(model.downloadedBytes, model.totalBytes).fraction
+        val percent = if (converting) model.conversionProgress else progress?.let { (it * 100).toInt() }
         return NotificationCompat.Builder(context, CHANNEL)
             .setContentTitle(model.modelName)
             .setContentText(when {
+                converting -> context.getString(when (model.conversionStatus) {
+                    ModelConversionStatus.Converting -> R.string.library_converting
+                    ModelConversionStatus.Finalizing -> R.string.library_conversion_finalizing
+                    else -> R.string.library_conversion_validating
+                })
                 verifying -> context.getString(R.string.library_verifying)
                 model.downloadStatus == DownloadStatus.Queued -> context.getString(R.string.library_preparing)
                 else -> context.getString(R.string.library_bytes, Formatter.formatShortFileSize(context, model.downloadedBytes))
@@ -114,7 +123,7 @@ internal class DownloadNotifications(private val context: Context, private val n
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
-            .setProgress(100, ((progress ?: 0f) * 100).toInt(), verifying || progress == null)
+            .setProgress(100, percent ?: 0, verifying || percent == null)
             .build()
     }
 
@@ -123,4 +132,4 @@ internal class DownloadNotifications(private val context: Context, private val n
     }
 }
 
-private const val STORAGE_KEY = "storageKey"
+internal const val STORAGE_KEY = "storageKey"

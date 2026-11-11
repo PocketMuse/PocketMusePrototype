@@ -79,6 +79,8 @@ internal fun PocketMuseApp(
     library: List<LibraryItem> = emptyList(),
     onDownloadRequest: ((CatalogCheckpoint) -> Unit)? = null,
     onRemoveModel: (LibraryModel) -> Unit = {},
+    onStartConversion: (LibraryModel) -> Unit = {},
+    onCancelConversion: (LibraryModel) -> Unit = {},
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
     libraryRequest: Int = 0
 ) {
@@ -147,7 +149,7 @@ internal fun PocketMuseApp(
                         }
                         AppTab.Library -> tabStateHolder.SaveableStateProvider(AppTab.Library.name) {
                             LibraryScreen(
-                                library, onRemoveModel,
+                                library, onRemoveModel, onStartConversion, onCancelConversion,
                                 Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
                             )
                         }

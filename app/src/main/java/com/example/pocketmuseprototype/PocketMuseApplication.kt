@@ -8,6 +8,7 @@ import com.example.pocketmuseprototype.auth.AppAuthRemote
 import com.example.pocketmuseprototype.auth.AuthManager
 import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.auth.KeystoreSessionStore
+import com.example.pocketmuseprototype.conversion.BundledHqqTemplate
 import com.example.pocketmuseprototype.download.CivitaiTransfer
 import com.example.pocketmuseprototype.download.DownloadError
 import com.example.pocketmuseprototype.download.DownloadFailure
@@ -15,11 +16,13 @@ import com.example.pocketmuseprototype.download.LibraryDatabase
 import com.example.pocketmuseprototype.download.ModelDownloads
 import com.example.pocketmuseprototype.download.ModelStorage
 import com.example.pocketmuseprototype.download.WorkManagerDownloads
+import com.example.pocketmuseprototype.download.WorkManagerConversions
 import com.example.pocketmuseprototype.download.writeWebpThumbnail
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import net.openid.appauth.internal.AppAuthLogging
 
@@ -33,8 +36,11 @@ class PocketMuseApplication : Application() {
         )
     }
     private val downloadScheduler by lazy { WorkManagerDownloads(WorkManager.getInstance(this)) }
+    private val conversionScheduler by lazy { WorkManagerConversions(WorkManager.getInstance(this)) }
     internal val downloads by lazy {
-        val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME).build()
+        val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
+            .addMigrations(LibraryDatabase.MIGRATION_1_2)
+            .build()
         ModelDownloads(
             library.models(),
             ModelStorage {
@@ -51,7 +57,9 @@ class PocketMuseApplication : Application() {
                 )
             },
             CivitaiTransfer(),
-            ::writeWebpThumbnail
+            ::writeWebpThumbnail,
+            conversionScheduler,
+            BundledHqqTemplate(this)::load
         )
     }
 
@@ -59,7 +67,7 @@ class PocketMuseApplication : Application() {
         super.onCreate()
         AppAuthLogging.disable()
         appScope.launch {
-            downloadScheduler.changes.collect { downloads.reconcile() }
+            merge(downloadScheduler.changes, conversionScheduler.changes).collect { downloads.reconcile() }
         }
     }
 }

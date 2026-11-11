@@ -38,8 +38,8 @@
     <string name="market_end">모든 모델을 확인했습니다.</string>
     <string name="market_retry">다시 시도</string>
     <string name="market_load_more">더 불러오기</string>
-    <string name="download_channel">모델 다운로드</string>
-    <string name="library_downloads">다운로드 관리</string>
+    <string name="download_channel">모델 다운로드 및 변환</string>
+    <string name="library_downloads">모델 작업</string>
     <string name="library_models">내 모델</string>
     <string name="library_downloads_empty">대기 중이거나 진행 중인 작업이 없습니다.</string>
     <string name="library_models_empty">다운로드한 모델이 없습니다.</string>
@@ -74,4 +74,22 @@
     <string name="library_error_cleanup">모델 파일을 정리하지 못했습니다. 삭제를 다시 시도해 주세요.</string>
     <string name="library_error_schedule">다운로드 작업을 등록하지 못했습니다.</string>
     <string name="library_error_interrupted">시스템에서 다운로드 작업을 시작하거나 계속할 수 없습니다.</string>
+    <string name="library_convert">변환</string>
+    <string name="library_convert_retry">변환 재시도</string>
+    <string name="library_conversion_not_started">변환 전</string>
+    <string name="library_conversion_queued">변환 대기 중</string>
+    <string name="library_conversion_validating">변환 입력 확인 중</string>
+    <string name="library_converting">HQQ 변환 중</string>
+    <string name="library_conversion_percent">HQQ 변환 중 · %1$d%%</string>
+    <string name="library_conversion_finalizing">변환 결과 확인 중</string>
+    <string name="library_converted">HQQ 변환 완료</string>
+    <string name="library_conversion_failed">변환 실패</string>
+    <string name="library_conversion_cancelling">변환 취소 중</string>
+    <string name="library_conversion_cancelled">변환 취소됨</string>
+    <string name="library_conversion_error_checkpoint">체크포인트를 HQQ 형식으로 변환할 수 없습니다. 원본은 보존됩니다.</string>
+    <string name="library_conversion_error_template">변환 템플릿을 확인할 수 없습니다.</string>
+    <string name="library_conversion_error_interrupted">변환을 시작하거나 계속할 수 없습니다. 앱에서 변환을 다시 시작해 주세요.</string>
+    <string name="library_conversion_error_output">변환 결과가 없거나 손상되었습니다. 원본은 보존됩니다.</string>
+    <string name="library_conversion_error_cleanup">이전 변환 파일을 정리하지 못했습니다. 원본은 보존됩니다.</string>
+    <string name="library_conversion_error_generic">변환을 완료하지 못했습니다. 원본은 보존됩니다.</string>
 </resources>
