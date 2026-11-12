@@ -28,6 +28,8 @@ internal sealed interface SharedLcmState {
     data class Failed(val error: DownloadError) : SharedLcmState
 }
 
+internal enum class SharedLcmCancellation { Cancelled, AlreadyReady, NoActiveWork, Failed }
+
 internal data class SharedLcmWork(
     val id: UUID,
     val state: WorkInfo.State,
@@ -91,10 +93,17 @@ internal class SharedLcmDownloads(
     private fun refresh() = revision.update { it + 1 }
 
     suspend fun reconcile() = commands.withLock {
-        withContext(Dispatchers.IO) {
-            if (transfers.tryLock()) {
+        try {
+            withContext(Dispatchers.IO) {
+                val work = scheduler.work.first()
+                if (work != null && !work.state.isFinished &&
+                    files.withLock { storage.lastResult(work.id) == REMOVED }
+                ) {
+                    stopAndClean(work.id)
+                    return@withContext
+                }
+                if (!transfers.tryLock()) return@withContext
                 try {
-                    val work = scheduler.work.first()
                     if (work == null || work.state.isFinished) storage.clearPartial()
                     if (work?.state == WorkInfo.State.CANCELLED) {
                         files.withLock {
@@ -103,14 +112,17 @@ internal class SharedLcmDownloads(
                             }
                         }
                     }
-                } catch (_: IOException) {
-                    // A later attempt also clears the previous partial before it opens the stream.
                 } finally {
                     transfers.unlock()
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A recorded cancellation can be retried at the next reconciliation.
+        } finally {
+            refresh()
         }
-        refresh()
     }
 
     /** Returns true when this request registered work. */
@@ -136,27 +148,36 @@ internal class SharedLcmDownloads(
         }
     }
 
-    suspend fun cancel(): Boolean = commands.withLock {
+    suspend fun cancel(): SharedLcmCancellation = commands.withLock {
         try {
             val work = scheduler.work.first()
-            if (work == null || work.state.isFinished) return@withLock true
-            withContext(Dispatchers.IO) {
-                files.withLock { storage.recordResult(work.id, REMOVED) }
+            val recorded = withContext(Dispatchers.IO) {
+                files.withLock {
+                    when {
+                        storage.problem() == null -> SharedLcmCancellation.AlreadyReady
+                        work == null || work.state.isFinished -> SharedLcmCancellation.NoActiveWork
+                        else -> {
+                            storage.recordResult(work.id, REMOVED)
+                            SharedLcmCancellation.Cancelled
+                        }
+                    }
+                }
             }
-            scheduler.cancel(work.id)
-            withContext(Dispatchers.IO) { transfers.withLock { storage.clearPartial() } }
-            true
+            if (recorded == SharedLcmCancellation.Cancelled) stopAndClean(checkNotNull(work).id)
+            recorded
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            false
+            SharedLcmCancellation.Failed
         } finally {
             refresh()
         }
     }
 
-    suspend fun wasRemoved(id: UUID): Boolean = withContext(Dispatchers.IO) {
-        files.withLock { storage.lastResult(id) == REMOVED }
+    private suspend fun stopAndClean(id: UUID) {
+        scheduler.cancel(id)
+        withContext(Dispatchers.IO) { transfers.withLock { storage.clearPartial() } }
+        schedulingError.value = null
     }
 
     suspend fun delete(): Boolean = commands.withLock {
@@ -172,7 +193,7 @@ internal class SharedLcmDownloads(
                     }
                 }
                 true
-            }
+            }.also { if (it) schedulingError.value = null }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -205,12 +226,24 @@ internal class SharedLcmDownloads(
         }
     }
 
+    /** Returns whether this attempt made or found a verified file. */
     suspend fun run(
+        id: UUID,
         foreground: suspend () -> Unit,
         progress: suspend (SharedLcmState) -> Unit
-    ) = withContext(Dispatchers.IO) {
+    ): Boolean = withContext(Dispatchers.IO) {
         transfers.withLock {
-            if (files.withLock { storage.problem() == null }) return@withLock
+            val existing = files.withLock {
+                when {
+                    storage.lastResult(id) == REMOVED -> false
+                    storage.problem() == null -> true
+                    else -> null
+                }
+            }
+            if (existing != null) {
+                if (!existing) storage.clearPartial()
+                return@withLock existing
+            }
             foreground()
             progress(SharedLcmState.Downloading(0))
             fileUse.withLock {
@@ -223,9 +256,12 @@ internal class SharedLcmDownloads(
             try {
                 transfer.download(partial, progress)
                 fileUse.withLock {
-                    files.withLock {
+                    files.withLock publish@{
                         currentCoroutineContext().ensureActive()
+                        // Cancel and atomic publication commit under the same file lock.
+                        if (storage.lastResult(id) == REMOVED) return@publish false
                         if (storage.problem() != null) storage.publish()
+                        true
                     }
                 }
             } finally {

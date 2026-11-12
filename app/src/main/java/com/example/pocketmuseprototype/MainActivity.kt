@@ -27,6 +27,7 @@ import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.auth.CivitaiOAuth
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.download.EnqueueResult
+import com.example.pocketmuseprototype.download.SharedLcmCancellation
 import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
@@ -82,7 +83,7 @@ class MainActivity : ComponentActivity() {
                     onRetryLcm = ::ensureSharedLcm,
                     onCancelLcm = {
                         app.appScope.launch {
-                            if (!app.sharedLcm.cancel()) lifecycleScope.launch {
+                            if (app.sharedLcm.cancel() == SharedLcmCancellation.Failed) lifecycleScope.launch {
                                 snackbar.showSnackbar(getString(R.string.library_lcm_cancel_error))
                             }
                         }

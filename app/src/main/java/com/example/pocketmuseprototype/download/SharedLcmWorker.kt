@@ -51,9 +51,7 @@ class SharedLcmWorker(context: Context, parameters: WorkerParameters) : Coroutin
     private val title = context.getString(R.string.library_lcm_name)
 
     override suspend fun doWork(): Result = try {
-        // The process can stop after recording cancellation and before WorkManager receives it.
-        if (!downloads.wasRemoved(id)) download()
-        Result.success()
+        if (download()) Result.success() else Result.failure()
     } catch (failure: DownloadFailure) {
         if (failure.code == DownloadError.Network && runAttemptCount < 2) Result.retry()
         else failed(failure.code)
@@ -61,8 +59,9 @@ class SharedLcmWorker(context: Context, parameters: WorkerParameters) : Coroutin
         failed(DownloadError.FileWrite)
     }
 
-    private suspend fun download() {
-        downloads.run(
+    private suspend fun download(): Boolean {
+        val ready = downloads.run(
+            id,
             foreground = {
                 try {
                     setForeground(notifications.foreground(title, applicationContext.getString(R.string.library_preparing)))
@@ -82,7 +81,8 @@ class SharedLcmWorker(context: Context, parameters: WorkerParameters) : Coroutin
                 notifications.update(title, message, percent)
             }
         )
-        downloads.recordResult(id, null)
+        if (ready) downloads.recordResult(id, null)
+        return ready
     }
 
     private suspend fun failed(error: DownloadError): Result {

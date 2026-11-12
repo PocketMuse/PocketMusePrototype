@@ -4,6 +4,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.Lifecycle
@@ -21,6 +22,7 @@ import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.download.WorkManagerSharedLcm
 import com.example.pocketmuseprototype.ui.LibraryScreen
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
+import java.io.File
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -135,5 +137,61 @@ class SharedLcmNetworkAndroidTest {
         compose.activityRule.scenario.recreate()
         compose.onNodeWithText("SD1.5 LCM LoRA").assertIsDisplayed()
         compose.onNodeWithText(app.getString(R.string.library_lcm_ready), substring = true).assertIsDisplayed()
+    }
+
+    @Test fun libraryCancelsLiveTransferAndRetryPublishesVerifiedAsset() {
+        val app = compose.activity.application as PocketMuseApplication
+        assumeTrue(InstrumentationRegistry.getArguments().getString("sharedLcmCancelNetwork") == "true")
+        assumeTrue(app.packageName.endsWith(".converterbenchmark"))
+        val downloads = app.sharedLcm
+        val manager = WorkManager.getInstance(app)
+        val work = manager.getWorkInfosForUniqueWorkFlow(Sd15LcmLora.WORK)
+        val asset = File(app.noBackupFilesDir, "shared-assets/${Sd15LcmLora.ID}/${Sd15LcmLora.FILE_NAME}")
+        val partial = File(asset.parentFile, "${asset.name}.part")
+        compose.onNodeWithText("Library").performClick()
+        try {
+            val first = runBlocking {
+                assertTrue(downloads.ensure())
+                val id = work.first().single().id
+                val transfer = withTimeout(60_000) {
+                    downloads.state.first {
+                        it is SharedLcmState.Downloading && it.bytes > 0 ||
+                            it is SharedLcmState.Failed || it == SharedLcmState.Ready
+                    }
+                }
+                assertTrue(transfer.toString(), transfer is SharedLcmState.Downloading)
+                id
+            }
+            val cancelLabel = app.getString(R.string.library_cancel)
+            compose.waitUntil(5_000) { compose.onAllNodesWithText(cancelLabel).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText(cancelLabel).performClick()
+            runBlocking {
+                val cancelled = withTimeout(15_000) { work.first { it.single().state.isFinished }.single() }
+                assertEquals(first, cancelled.id)
+                assertEquals(WorkInfo.State.CANCELLED, cancelled.state)
+                downloads.reconcile()
+                assertFalse(partial.exists())
+                assertFalse(asset.exists())
+                assertEquals(SharedLcmState.Missing, downloads.state.first())
+
+                assertTrue(downloads.ensure())
+                val retry = withTimeout(240_000) { work.first { it.single().state.isFinished }.single() }
+                assertTrue(first != retry.id)
+                assertEquals(WorkInfo.State.SUCCEEDED, retry.state)
+                assertEquals(
+                    134_621_556L to "8f90d840e075ff588a58e22c6586e2ae9a6f7922996ee6649a7f01072333afe4",
+                    downloads.withVerifiedFile { it.length() to it.sha256() }
+                )
+            }
+            val readyLabel = app.getString(R.string.library_lcm_ready)
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText(readyLabel, substring = true).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(readyLabel, substring = true).assertIsDisplayed()
+        } finally {
+            runBlocking {
+                if (downloads.state.first() == SharedLcmState.Ready) downloads.delete() else downloads.cancel()
+            }
+        }
     }
 }

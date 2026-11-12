@@ -24,6 +24,8 @@ Market의 다운로드 요청은 Civitai 체크포인트 예약과 공용 LoRA �
 - 별도 WorkManager 고유 작업 `shared-sd15-lcm-lora-v1`에 `KEEP`과 `CONNECTED` 제약을 적용한다. 기존 다운로드의 `dataSync` 서비스와 알림 채널을 공유한다. 전송에는 HTTPS 리다이렉트와 인증 정보 없는 요청을 사용한다. 일시적 네트워크 오류에는 WorkManager 백오프로 최대 두 번 재시도한다. 중단된 파일은 다음 시도에서 처음부터 받는다. 재실행 시점은 OS 정책과 네트워크 제약을 따른다. [WorkManager 고유 작업](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work)
 - 내부 앱 전용 `Context.noBackupFilesDir/shared-assets/sd15-lcm-lora-v1/`에 저장한다. 같은 디렉터리의 `.part`에 스트리밍한 뒤 길이와 전체 해시를 확인하고 원자적으로 최종 이름을 공개한다. 프로세스를 다시 시작하거나 파일의 식별 정보가 바뀌면 SHA-256을 다시 확인한다. 프로세스 안에서는 동일 파일의 검증 결과를 재사용한다. 취소는 공용 작업 ID에만 적용하며 Worker가 스트림과 파일을 닫은 뒤 임시 파일을 정리한다.
 - 작업 상태와 진행률은 WorkManager에서 읽는다. 원자적으로 갱신하는 작은 `last-result` 파일은 WorkManager가 완료 기록을 정리한 뒤에도 실패 이유와 사용자 삭제를 복구한다. 최종 파일의 검증 결과가 사용 가능 여부를 결정한다. 성공한 작업의 파일이 사라지거나 손상되면 Library에서 재시도할 수 있다. [WorkManager 완료 기록 정리](https://developer.android.com/reference/kotlin/androidx/work/WorkManager#pruneWork())
+- WorkManager 2.11.2에서 이 단일 요청을 `KEEP`으로 다시 예약하면 이전 완료 행을 제거하고 새 ID를 삽입한다. 조회 목록은 시간순 정렬을 보장하지 않는다. 활성 작업을 우선하고, 완료 행이 하나일 때 그 ID와 결과를 사용한다. 완료 행이 여러 개이거나 정리된 경우에는 검증된 파일과 `last-result`를 사용한다. [KEEP 계약](https://developer.android.com/reference/androidx/work/ExistingWorkPolicy#KEEP), [WorkManager 조회 소스](https://android.googlesource.com/platform/frameworks/support/+/db73e0b8cd586cfeb723a3d99f75e04e14db41d5/work/work-runtime/src/main/java/androidx/work/impl/model/WorkSpecDao.kt)
+- 취소 기록과 최종 파일의 원자적 공개는 같은 파일 잠금에서 순서를 정한다. 작업 ID의 취소 기록이 먼저 저장되면 Worker는 공개를 건너뛴다. 공개가 먼저 끝났으면 **사용 가능**을 유지한다. 취소 기록만 남기고 프로세스가 종료된 경우에는 재실행 시 WorkManager 취소와 임시 파일 정리를 마친다. 재시도는 이전 Worker의 파일 정리가 끝난 뒤 새 ID를 사용한다.
 - Task 3의 경로 API는 `PocketMuseApplication.sharedLcm.withVerifiedFile { file -> … }`다. 검증된 절대 `File`을 I/O 디스패처의 콜백에 전달하며 누락·손상 시 `null`을 반환한다. 저장소 I/O와 콜백의 예외는 호출자에게 전파한다. 네이티브 호출과 취소 후 자원 해제까지 콜백 안에서 끝낸다. 파일 삭제와 교체는 콜백 종료를 기다린다.
 
 ## 검증
@@ -45,7 +47,15 @@ $pkg = 'com.example.pocketmuseprototype.converterbenchmark'
 adb shell am instrument -w -e class com.example.pocketmuseprototype.SharedLcmNetworkAndroidTest -e sharedLcmNetwork true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 ```
 
+공용 파일이 없는 같은 격리 패키지에서 실제 전송 취소와 재다운로드도 실행할 수 있다. 이 테스트는 Library의 취소 버튼을 누른 뒤 임시·최종 파일이 없고, 새 WorkManager ID로 검증된 파일을 내려받는지 확인한다.
+
+```powershell
+adb shell am instrument -w -e class 'com.example.pocketmuseprototype.SharedLcmNetworkAndroidTest#libraryCancelsLiveTransferAndRetryPublishesVerifiedAsset' -e sharedLcmCancelNetwork true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
 2026-11-12 Galaxy S20+ (SM-G986N, Android 13/API 33) 격리 Debug 빌드에서 공식 파일을 한 번 다운로드했다. Activity를 백그라운드로 보낸 뒤 전송을 완료했고, 중복 요청과 Ready 상태에서 고유 작업 ID가 유지됐다. 기기의 `stat`과 `sha256sum`으로 공식 크기와 해시를 확인했다. Activity 재생성과 앱 프로세스 재시작 뒤 Library에서 **사용 가능 · 135MB**를 확인했다. Library에서 삭제하면 최종 파일과 LR 카드가 사라졌고, 다시 실행한 뒤에도 빈 상태가 유지됐다. 실기기에서 전송 중 프로세스 종료·네트워크 단절과 Android 14–16의 작업 제약은 별도로 시험해야 한다.
+
+후속 검증에서는 같은 기기에서 WorkManager 2.11.2의 성공·실패·취소 작업 교체와 기록 정리 후 복구를 합성 Worker로 확인했다. 별도의 실네트워크 계측에서 Library로 실제 전송을 취소한 뒤 임시·최종 파일이 없음을 확인했고, 재시도는 새 ID로 완료되어 공식 길이와 SHA-256이 일치했다. 취소 기록 직후 프로세스가 종료되는 경우는 저장 상태를 재구성한 JVM 테스트로 검증했다.
 
 호스트 테스트는 합성 HTTP 응답과 임시 파일을 사용한다. Android 테스트는 Compose 상태·탭 이동·Activity 재생성, Room 재열기, 앱 전용 파일 및 포그라운드 서비스 선언과 알림 채널을 검사한다. 실계정 E2E는 별도로 Galaxy S20+에서 로그인, 진행률, 홈 화면 전환, 취소, 다시 다운로드, 프로세스 재실행 후 로컬 썸네일, 삭제를 확인한다.
 
