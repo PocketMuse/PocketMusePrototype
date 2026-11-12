@@ -8,13 +8,9 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -23,7 +19,6 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
 
@@ -39,10 +34,7 @@ internal class CivitaiTransfer(
     client: OkHttpClient = OkHttpClient.Builder().readTimeout(30, TimeUnit.SECONDS).build(),
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000 }
 ) {
-    private val http = client.newBuilder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .build()
+    private val http = DownloadHttp(client)
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun download(
@@ -66,7 +58,7 @@ internal class CivitaiTransfer(
         }
         val expectedHash = latestHash ?: originalHash
         val digest = expectedHash?.let { MessageDigest.getInstance("SHA-256") }
-        val bytes = response(pinnedUrl, token) { response ->
+        val bytes = http.response(pinnedUrl, token) { response ->
             val body = response.requireBody()
             val total = body.contentLength().takeIf { it >= 0 }
             val directory = checkNotNull(partial.parentFile)
@@ -120,11 +112,11 @@ internal class CivitaiTransfer(
     suspend fun thumbnail(url: String): ByteArray = withContext(Dispatchers.IO) {
         val source = url.toHttpUrlOrNull()?.takeIf { it.isSafeHttps() }
             ?: throw DownloadFailure(DownloadError.InvalidMetadata)
-        response(source, timeoutSeconds = 15) { response -> response.requireBody().readLimited(MAX_IMAGE_BYTES) }
+        http.response(source, timeoutSeconds = 15) { response -> response.requireBody().readLimited(MAX_IMAGE_BYTES) }
     }
 
     private suspend fun resolveFile(model: LibraryModel, token: String): FileDto =
-        response("https://civitai.com/api/v1/model-versions/${model.modelVersionId}".toHttpUrl(), token, 30) {
+        http.response("https://civitai.com/api/v1/model-versions/${model.modelVersionId}".toHttpUrl(), token, 30) {
             val version = try {
                 json.decodeFromString<DownloadVersion>(it.requireBody().readLimited(MAX_METADATA_BYTES).decodeToString())
             } catch (_: SerializationException) {
@@ -141,79 +133,22 @@ internal class CivitaiTransfer(
             file
         }
 
-    private suspend fun <T> response(
-        url: HttpUrl,
-        token: String? = null,
-        timeoutSeconds: Long = 0,
-        consume: suspend (Response) -> T
-    ): T {
-        var destination = url
-        var bearer = token
-        repeat(MAX_REDIRECTS + 1) { hop ->
-            val request = Request.Builder().url(destination).header("Accept-Encoding", "identity")
-            if (bearer != null && destination.isCivitaiOrigin()) {
-                request.header("Authorization", "Bearer $bearer")
-            }
-            val redirect = coroutineScope {
-                val call = http.newCall(request.build())
-                if (timeoutSeconds > 0) call.timeout().timeout(timeoutSeconds, TimeUnit.SECONDS)
-                // Cancellation must interrupt a blocked read, and response.use must finish before returning.
-                val closeCall = launch(start = CoroutineStart.UNDISPATCHED) {
-                    try {
-                        awaitCancellation()
-                    } finally {
-                        call.cancel()
-                    }
-                }
-                try {
-                    call.execute().use { response ->
-                        if (response.code in redirectCodes) {
-                            response.header("Location")?.let(destination::resolve)?.takeIf { it.isSafeHttps() }
-                                ?: throw DownloadFailure(DownloadError.InvalidMetadata)
-                        } else {
-                            return@coroutineScope ResponseStep.Done(consume(response))
-                        }.let { ResponseStep.Redirect(it) }
-                    }
-                } finally {
-                    closeCall.cancel()
-                }
-            }
-            when (redirect) {
-                is ResponseStep.Done -> return redirect.value
-                is ResponseStep.Redirect -> {
-                    if (hop == MAX_REDIRECTS) throw DownloadFailure(DownloadError.Server)
-                    if (redirect.url.host != destination.host) bearer = null
-                    destination = redirect.url
-                }
-            }
-        }
-        error("Redirect limit exceeded")
-    }
-
-    private sealed interface ResponseStep<out T> {
-        data class Done<T>(val value: T) : ResponseStep<T>
-        data class Redirect(val url: HttpUrl) : ResponseStep<Nothing>
-    }
-
     @Serializable
     private data class DownloadVersion(val id: Long, val modelId: Long, val files: List<FileDto> = emptyList())
 
     private companion object {
-        val redirectCodes = setOf(301, 302, 303, 307, 308)
-        const val MAX_REDIRECTS = 5
         const val MAX_METADATA_BYTES = 2L * 1024 * 1024
         const val MAX_IMAGE_BYTES = 4L * 1024 * 1024
-        const val PROGRESS_INTERVAL_MS = 500L
     }
 }
 
-private fun HttpUrl.isCivitaiOrigin(): Boolean = isHttps && port == 443 && host == "civitai.com"
-private fun HttpUrl.isSafeHttps(): Boolean = isHttps && port == 443 && username.isEmpty() && password.isEmpty()
+internal fun HttpUrl.isCivitaiOrigin(): Boolean = isHttps && port == 443 && host == "civitai.com"
+internal fun HttpUrl.isSafeHttps(): Boolean = isHttps && port == 443 && username.isEmpty() && password.isEmpty()
 
 internal fun String?.stableThumbnailUrl(): String? = this?.toHttpUrlOrNull()?.takeIf { it.isSafeHttps() }
     ?.newBuilder()?.query(null)?.fragment(null)?.build()?.toString()
 
-private fun Response.requireBody(): ResponseBody {
+internal fun Response.requireBody(): ResponseBody {
     if (code != 200) throw DownloadFailure(when (code) {
         401 -> DownloadError.AuthRequired
         403 -> DownloadError.Forbidden
@@ -241,9 +176,11 @@ private fun String.checkedHash(): String {
     return lowercase()
 }
 
-private inline fun <T> fileIo(directory: File, writeBytes: Long = 1, block: () -> T): T = try {
+internal inline fun <T> fileIo(directory: File, writeBytes: Long = 1, block: () -> T): T = try {
     block()
 } catch (error: IOException) {
     val noSpace = (error.cause as? ErrnoException)?.errno == OsConstants.ENOSPC || directory.usableSpace < writeBytes
     throw DownloadFailure(if (noSpace) DownloadError.NoSpace else DownloadError.FileWrite)
 }
+
+internal const val PROGRESS_INTERVAL_MS = 500L

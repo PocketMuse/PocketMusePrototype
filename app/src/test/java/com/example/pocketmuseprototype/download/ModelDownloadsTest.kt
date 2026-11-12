@@ -1,5 +1,6 @@
 package com.example.pocketmuseprototype.download
 
+import androidx.work.WorkInfo
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.conversion.ConversionErrorCode
 import com.example.pocketmuseprototype.conversion.HqqTemplate
@@ -18,6 +19,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -102,6 +104,29 @@ class ModelDownloadsTest {
         assertEquals(DownloadStatus.Failed, failed.downloadStatus)
         assertEquals(ModelConversionStatus.NotStarted, failed.conversionStatus)
         assertTrue(conversions.enqueued.isEmpty())
+    }
+
+    @Test fun checkpointFailureAndCancellationLeaveSharedWorkQueued() = runBlocking {
+        val sharedWork = MutableStateFlow<SharedLcmWork?>(null)
+        val shared = SharedLcmDownloads(SharedLcmStorage(folder.root), object : SharedLcmScheduler {
+            override val work = sharedWork
+            override suspend fun enqueue() {
+                work.value = SharedLcmWork(UUID.randomUUID(), WorkInfo.State.ENQUEUED)
+            }
+            override suspend fun cancel(id: UUID) = error("Checkpoint cancellation reached shared work")
+        })
+        assertTrue(shared.ensure())
+        val original = sharedWork.value
+        val downloads = downloads()
+        val failing = enqueue(downloads)
+        downloadCode = 403
+        downloads.run(failing.storageKey, failing.workId, {}, {})
+        assertEquals(DownloadStatus.Failed, store.find(failing.storageKey)?.downloadStatus)
+        val cancelled = enqueue(downloads, candidate(fileId = 31))
+        downloads.remove(cancelled)
+        assertNull(store.find(cancelled.storageKey))
+        assertEquals(original, sharedWork.value)
+        assertEquals(SharedLcmState.Queued, shared.state.first())
     }
 
     @Test fun persistedConversionIntentIsScheduledOnceAndCancelledWorkerCannotRun() = runBlocking {

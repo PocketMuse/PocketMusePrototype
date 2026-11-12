@@ -2,6 +2,8 @@
 
 Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받는다. 다운로드 검증이 끝나면 기기에서 SD 1.5 HQQ 변환을 예약하고 Library에 결과를 표시한다. [변환과 JNI 계약](docs/Converter.md)
 
+Market에서 체크포인트 다운로드를 요청하면 공용 SD1.5 LCM LoRA도 별도 작업으로 준비한다. 진행률, 실패 재시도 및 삭제는 Library에서 확인할 수 있다. [공용 LoRA 다운로드 계약](docs/Model-Downloads.md#공용-sd15-lcm-lora)
+
 ## 빌드와 테스트
 
 JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 SHA-512가 고정된 nlohmann/json 3.12.0과 PicoSHA2 1.0.1 소스를 가져온다.

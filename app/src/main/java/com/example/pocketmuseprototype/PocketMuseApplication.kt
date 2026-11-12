@@ -15,8 +15,11 @@ import com.example.pocketmuseprototype.download.DownloadFailure
 import com.example.pocketmuseprototype.download.LibraryDatabase
 import com.example.pocketmuseprototype.download.ModelDownloads
 import com.example.pocketmuseprototype.download.ModelStorage
+import com.example.pocketmuseprototype.download.SharedLcmDownloads
+import com.example.pocketmuseprototype.download.SharedLcmStorage
 import com.example.pocketmuseprototype.download.WorkManagerDownloads
 import com.example.pocketmuseprototype.download.WorkManagerConversions
+import com.example.pocketmuseprototype.download.WorkManagerSharedLcm
 import com.example.pocketmuseprototype.download.writeWebpThumbnail
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +40,9 @@ class PocketMuseApplication : Application() {
     }
     private val downloadScheduler by lazy { WorkManagerDownloads(WorkManager.getInstance(this)) }
     private val conversionScheduler by lazy { WorkManagerConversions(WorkManager.getInstance(this)) }
+    internal val sharedLcm by lazy {
+        SharedLcmDownloads(SharedLcmStorage(noBackupFilesDir), WorkManagerSharedLcm(WorkManager.getInstance(this)))
+    }
     internal val downloads by lazy {
         val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
             .addMigrations(LibraryDatabase.MIGRATION_1_2)

@@ -39,6 +39,8 @@ import com.example.pocketmuseprototype.download.DownloadStatus
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.ModelConversionStatus
+import com.example.pocketmuseprototype.download.Sd15LcmLora
+import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.download.TransferProgress
 
 @Composable
@@ -47,7 +49,11 @@ internal fun LibraryScreen(
     onRemove: (LibraryModel) -> Unit,
     onStartConversion: (LibraryModel) -> Unit,
     onCancelConversion: (LibraryModel) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sharedLcm: SharedLcmState = SharedLcmState.Missing,
+    onRetryLcm: () -> Unit = {},
+    onCancelLcm: () -> Unit = {},
+    onDeleteLcm: () -> Unit = {}
 ) {
     val (transfers, downloaded) = library.partition {
         val model = it.model
@@ -56,17 +62,21 @@ internal fun LibraryScreen(
             (model.downloadStatus == DownloadStatus.Downloaded &&
                 (model.conversionStatus.pending || model.conversionStatus == ModelConversionStatus.Cancelling))
     }
+    val lcmReady = sharedLcm == SharedLcmState.Ready
+    val lcmInDownloads = sharedLcm != SharedLcmState.Missing && !lcmReady
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(top = 20.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item { SectionTitle(R.string.library_downloads) }
-        if (transfers.isEmpty()) item { EmptySection(R.string.library_downloads_empty) }
+        if (transfers.isEmpty() && !lcmInDownloads) item { EmptySection(R.string.library_downloads_empty) }
+        if (lcmInDownloads) item(key = Sd15LcmLora.ID) { SharedLcmCard(sharedLcm, onRetryLcm, onCancelLcm, onDeleteLcm) }
         items(transfers, key = { it.model.storageKey }) { ModelCard(it, onRemove, onStartConversion, onCancelConversion) }
 
         item { SectionTitle(R.string.library_models, Modifier.padding(top = 16.dp)) }
-        if (downloaded.isEmpty()) item { EmptySection(R.string.library_models_empty) }
+        if (downloaded.isEmpty() && !lcmReady) item { EmptySection(R.string.library_models_empty) }
+        if (lcmReady) item(key = Sd15LcmLora.ID) { SharedLcmCard(sharedLcm, onRetryLcm, onCancelLcm, onDeleteLcm) }
         items(downloaded, key = { it.model.storageKey }) { ModelCard(it, onRemove, onStartConversion, onCancelConversion) }
     }
 }
@@ -91,6 +101,95 @@ private fun EmptySection(@StringRes message: Int) {
 }
 
 @Composable
+private fun LibraryCard(
+    title: String,
+    description: String,
+    thumbnail: @Composable () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(shape = MaterialTheme.shapes.large, color = colors.surfaceContainerLow) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(64.dp).clip(MaterialTheme.shapes.medium).background(colors.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center
+                ) {
+                    thumbnail()
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        description, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SharedLcmCard(
+    state: SharedLcmState,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val label = when (state) {
+        SharedLcmState.Missing -> return
+        SharedLcmState.Queued -> R.string.library_queued
+        is SharedLcmState.Downloading -> R.string.library_downloading
+        SharedLcmState.Verifying -> R.string.library_verifying
+        SharedLcmState.Ready -> R.string.library_lcm_ready
+        is SharedLcmState.Failed -> R.string.library_failed
+    }
+    val (actionLabel, action) = when (state) {
+        SharedLcmState.Ready -> R.string.library_delete to onDelete
+        is SharedLcmState.Failed -> R.string.library_lcm_retry to onRetry
+        else -> R.string.library_cancel to onCancel
+    }
+    LibraryCard(
+        title = stringResource(R.string.library_lcm_name),
+        description = stringResource(R.string.library_lcm_description),
+        thumbnail = { Text("LR", color = colors.onSurfaceVariant, style = MaterialTheme.typography.titleMedium) }
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val status = stringResource(label)
+                Text(
+                    if (state == SharedLcmState.Ready) stringResource(
+                        R.string.library_downloaded_size, status, Formatter.formatShortFileSize(context, Sd15LcmLora.SIZE)
+                    ) else status,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (state is SharedLcmState.Failed) colors.error else colors.onSurfaceVariant
+                )
+                if (state is SharedLcmState.Failed) {
+                    val error = when (state.error) {
+                        DownloadError.AuthRequired, DownloadError.AuthUnavailable, DownloadError.Forbidden,
+                        DownloadError.NotFound, DownloadError.RateLimited, DownloadError.Server -> R.string.library_lcm_source_error
+                        else -> state.error.label
+                    }
+                    Text(stringResource(error), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+            }
+            TextButton(onClick = action) { Text(stringResource(actionLabel)) }
+        }
+        when (state) {
+            is SharedLcmState.Downloading -> DownloadProgress(TransferProgress(state.bytes, Sd15LcmLora.SIZE))
+            SharedLcmState.Verifying -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            else -> Unit
+        }
+    }
+}
+
+@Composable
 private fun ModelCard(
     item: LibraryItem,
     onRemove: (LibraryModel) -> Unit,
@@ -101,73 +200,48 @@ private fun ModelCard(
     val status = model.downloadStatus
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
-    Surface(shape = MaterialTheme.shapes.large, color = colors.surfaceContainerLow) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+    LibraryCard(model.modelName, model.versionName, thumbnail = {
+        Icon(painterResource(R.drawable.ic_image), null, tint = colors.onSurfaceVariant)
+        if (item.thumbnail != null) {
+            AsyncImage(item.thumbnail, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+    }) {
+        val statusLabel = stringResource(status.label)
+        val message = when (status) {
+            DownloadStatus.Downloaded -> stringResource(
+                R.string.library_downloaded_size, statusLabel, Formatter.formatShortFileSize(context, model.fileSize)
+            )
+            else -> statusLabel
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier.size(64.dp).clip(MaterialTheme.shapes.medium)
-                        .background(colors.surfaceContainerHighest),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(painterResource(R.drawable.ic_image), null, tint = colors.onSurfaceVariant)
-                    if (item.thumbnail != null) {
-                        AsyncImage(item.thumbnail, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    }
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        model.modelName, style = MaterialTheme.typography.titleMedium,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        model.versionName, style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            val statusLabel = stringResource(status.label)
-            val message = when (status) {
-                DownloadStatus.Downloaded -> stringResource(
-                    R.string.library_downloaded_size, statusLabel, Formatter.formatShortFileSize(context, model.fileSize)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    message, style = MaterialTheme.typography.labelLarge,
+                    color = if (status == DownloadStatus.Failed) colors.error else colors.onSurfaceVariant
                 )
-                else -> statusLabel
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (model.errorCode != null) {
                     Text(
-                        message, style = MaterialTheme.typography.labelLarge,
-                        color = if (status == DownloadStatus.Failed) colors.error else colors.onSurfaceVariant
+                        stringResource(model.errorCode.label), style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
                     )
-                    if (model.errorCode != null) {
-                        Text(
-                            stringResource(model.errorCode.label), style = MaterialTheme.typography.bodySmall,
-                            color = colors.onSurfaceVariant
-                        )
-                    }
-                }
-                if (status.pending || status == DownloadStatus.Failed ||
-                    (status == DownloadStatus.Deleting && model.errorCode != null)
-                ) {
-                    TextButton(onClick = { onRemove(model) }) {
-                        Text(stringResource(if (status.pending) R.string.library_cancel else R.string.library_delete))
-                    }
                 }
             }
-            if (status == DownloadStatus.Downloading || status == DownloadStatus.Verifying) {
-                DownloadProgress(TransferProgress(model.downloadedBytes, model.totalBytes))
+            if (status.pending || status == DownloadStatus.Failed ||
+                (status == DownloadStatus.Deleting && model.errorCode != null)
+            ) {
+                TextButton(onClick = { onRemove(model) }) {
+                    Text(stringResource(if (status.pending) R.string.library_cancel else R.string.library_delete))
+                }
             }
-            if (status == DownloadStatus.Downloaded) {
-                ConversionDetails(model, onStartConversion, onCancelConversion, onRemove)
-            }
+        }
+        if (status == DownloadStatus.Downloading || status == DownloadStatus.Verifying) {
+            DownloadProgress(TransferProgress(model.downloadedBytes, model.totalBytes))
+        }
+        if (status == DownloadStatus.Downloaded) {
+            ConversionDetails(model, onStartConversion, onCancelConversion, onRemove)
         }
     }
 }

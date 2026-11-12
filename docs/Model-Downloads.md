@@ -16,6 +16,16 @@ Market → Image에서 Civitai 연결 후 체크포인트를 선택한다. 버�
 - 실패하면 `Failed`로 표시한다. 사용자가 취소하면 `Cancelling`으로 기록하고 실제 HTTP 호출을 취소한다. 진행 중인 Worker가 스트림과 파일을 닫은 뒤 모델 디렉터리를 정리하고 Room 행을 제거한다. 완료·실패 항목의 삭제는 `Deleting`을 기록한 뒤 해당 디렉터리를 지우고 Room 행을 제거한다. 파일 정리가 실패하면 행을 남겨 삭제를 다시 시도할 수 있다.
 - 시스템이 Worker를 멈추면 임시 파일을 폐기하고 대기 상태로 되돌린다. WorkManager가 작업을 다시 실행하면 처음부터 전송한다. 앱 재실행 시 DB와 작업·파일 상태를 대조한다. Room 등록 후 Worker가 아직 등록되지 않은 항목은 예약한다. `Verifying`에서 검증된 최종 파일의 이름 변경까지 마쳤으면 기록된 길이를 확인하고 완료 처리한다. 누락되거나 길이가 바뀐 완료 파일은 오류를 표시한다. 중단된 삭제나 취소는 정리를 계속한다. 강제 종료 뒤의 실행 시점은 Android의 작업 제한을 따른다.
 
+## 공용 SD1.5 LCM LoRA
+
+Market의 다운로드 요청은 Civitai 체크포인트 예약과 공용 LoRA 준비를 각각 시작한다. Library의 모델 작업 섹션에는 공용 작업의 대기·전송·검증·실패와 취소 또는 재시도를 표시한다. 검증된 파일은 **내 모델**에서 `LR` 마크와 **사용 가능** 상태, 크기, 삭제 버튼으로 표시한다.
+
+- 고정 출처는 Hugging Face의 `latent-consistency/lcm-lora-sdv1-5`이며 라이선스는 `openrail++`이다. 배포 revision은 `cf2fced511dbe7e26c8d1d397e728fbab875db4b`다. `pytorch_lora_weights.safetensors`의 길이 `134621556`바이트와 SHA-256 `8f90d840e075ff588a58e22c6586e2ae9a6f7922996ee6649a7f01072333afe4`를 검사한다. [모델 파일](https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/blob/cf2fced511dbe7e26c8d1d397e728fbab875db4b/pytorch_lora_weights.safetensors), [Git LFS 포인터](https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/raw/cf2fced511dbe7e26c8d1d397e728fbab875db4b/pytorch_lora_weights.safetensors)
+- 별도 WorkManager 고유 작업 `shared-sd15-lcm-lora-v1`에 `KEEP`과 `CONNECTED` 제약을 적용한다. 기존 다운로드의 `dataSync` 서비스와 알림 채널을 공유한다. 전송에는 HTTPS 리다이렉트와 인증 정보 없는 요청을 사용한다. 일시적 네트워크 오류에는 WorkManager 백오프로 최대 두 번 재시도한다. 중단된 파일은 다음 시도에서 처음부터 받는다. 재실행 시점은 OS 정책과 네트워크 제약을 따른다. [WorkManager 고유 작업](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work)
+- 내부 앱 전용 `Context.noBackupFilesDir/shared-assets/sd15-lcm-lora-v1/`에 저장한다. 같은 디렉터리의 `.part`에 스트리밍한 뒤 길이와 전체 해시를 확인하고 원자적으로 최종 이름을 공개한다. 프로세스를 다시 시작하거나 파일의 식별 정보가 바뀌면 SHA-256을 다시 확인한다. 프로세스 안에서는 동일 파일의 검증 결과를 재사용한다. 취소는 공용 작업 ID에만 적용하며 Worker가 스트림과 파일을 닫은 뒤 임시 파일을 정리한다.
+- 작업 상태와 진행률은 WorkManager에서 읽는다. 원자적으로 갱신하는 작은 `last-result` 파일은 WorkManager가 완료 기록을 정리한 뒤에도 실패 이유와 사용자 삭제를 복구한다. 최종 파일의 검증 결과가 사용 가능 여부를 결정한다. 성공한 작업의 파일이 사라지거나 손상되면 Library에서 재시도할 수 있다. [WorkManager 완료 기록 정리](https://developer.android.com/reference/kotlin/androidx/work/WorkManager#pruneWork())
+- Task 3의 경로 API는 `PocketMuseApplication.sharedLcm.withVerifiedFile { file -> … }`다. 검증된 절대 `File`을 I/O 디스패처의 콜백에 전달하며 누락·손상 시 `null`을 반환한다. 저장소 I/O와 콜백의 예외는 호출자에게 전파한다. 네이티브 호출과 취소 후 자원 해제까지 콜백 안에서 끝낸다. 파일 삭제와 교체는 콜백 종료를 기다린다.
+
 ## 검증
 
 Windows 프로젝트 루트에서 실행한다.
@@ -24,6 +34,18 @@ Windows 프로젝트 루트에서 실행한다.
 .\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
+
+공식 LoRA 실네트워크 테스트는 공용 파일이 아직 없는 격리 패키지에서 실행한다. 실제 전송을 시작하고 Activity를 백그라운드로 보낸 뒤 파일 크기·SHA-256, 고유 작업 ID, Activity 재생성 후 Library 상태를 검사한다.
+
+```powershell
+.\gradlew.bat -PconverterBenchmark=Debug :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+$pkg = 'com.example.pocketmuseprototype.converterbenchmark'
+adb shell am instrument -w -e class com.example.pocketmuseprototype.SharedLcmNetworkAndroidTest -e sharedLcmNetwork true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
+2026-11-12 Galaxy S20+ (SM-G986N, Android 13/API 33) 격리 Debug 빌드에서 공식 파일을 한 번 다운로드했다. Activity를 백그라운드로 보낸 뒤 전송을 완료했고, 중복 요청과 Ready 상태에서 고유 작업 ID가 유지됐다. 기기의 `stat`과 `sha256sum`으로 공식 크기와 해시를 확인했다. Activity 재생성과 앱 프로세스 재시작 뒤 Library에서 **사용 가능 · 135MB**를 확인했다. Library에서 삭제하면 최종 파일과 LR 카드가 사라졌고, 다시 실행한 뒤에도 빈 상태가 유지됐다. 실기기에서 전송 중 프로세스 종료·네트워크 단절과 Android 14–16의 작업 제약은 별도로 시험해야 한다.
 
 호스트 테스트는 합성 HTTP 응답과 임시 파일을 사용한다. Android 테스트는 Compose 상태·탭 이동·Activity 재생성, Room 재열기, 앱 전용 파일 및 포그라운드 서비스 선언과 알림 채널을 검사한다. 실계정 E2E는 별도로 Galaxy S20+에서 로그인, 진행률, 홈 화면 전환, 취소, 다시 다운로드, 프로세스 재실행 후 로컬 썸네일, 삭제를 확인한다.
 

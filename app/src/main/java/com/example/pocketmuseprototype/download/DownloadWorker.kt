@@ -81,49 +81,62 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) : Coroutine
 internal class DownloadNotifications(private val context: Context, private val notificationId: Int) {
     private val manager = context.getSystemService(NotificationManager::class.java)
 
-    fun foreground(model: LibraryModel): ForegroundInfo {
+    fun foreground(model: LibraryModel): ForegroundInfo = foreground(notification(model))
+
+    fun foreground(title: String, message: String): ForegroundInfo = foreground(notification(title, message, null))
+
+    private fun foreground(notification: Notification): ForegroundInfo {
         manager.createNotificationChannel(NotificationChannel(
             CHANNEL, context.getString(R.string.download_channel), NotificationManager.IMPORTANCE_LOW
         ))
-        return ForegroundInfo(notificationId, notification(model), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        return ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 
-    fun update(model: LibraryModel) {
+    fun update(model: LibraryModel) = update(notification(model))
+
+    fun update(title: String, message: String, percent: Int?) = update(notification(title, message, percent))
+
+    private fun update(notification: Notification) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) return
-        if (manager.areNotificationsEnabled()) manager.notify(notificationId, notification(model))
+        if (manager.areNotificationsEnabled()) manager.notify(notificationId, notification)
     }
 
     private fun notification(model: LibraryModel): Notification {
+        val converting = model.downloadStatus == DownloadStatus.Downloaded
+        val verifying = model.downloadStatus == DownloadStatus.Verifying
+        val progress = TransferProgress(model.downloadedBytes, model.totalBytes).fraction
+        val percent = if (converting) model.conversionProgress else progress?.let { (it * 100).toInt() }
+        val message = when {
+            converting -> context.getString(when (model.conversionStatus) {
+                ModelConversionStatus.Converting -> R.string.library_converting
+                ModelConversionStatus.Finalizing -> R.string.library_conversion_finalizing
+                else -> R.string.library_conversion_validating
+            })
+            verifying -> context.getString(R.string.library_verifying)
+            model.downloadStatus == DownloadStatus.Queued -> context.getString(R.string.library_preparing)
+            else -> context.getString(R.string.library_bytes, Formatter.formatShortFileSize(context, model.downloadedBytes))
+        }
+        return notification(model.modelName, message, percent.takeUnless { verifying })
+    }
+
+    private fun notification(title: String, message: String, percent: Int?): Notification {
         val openLibrary = Intent(context, MainActivity::class.java)
             .putExtra(MainActivity.OPEN_LIBRARY, true)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val contentIntent = PendingIntent.getActivity(
             context, 0, openLibrary, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val converting = model.downloadStatus == DownloadStatus.Downloaded
-        val verifying = model.downloadStatus == DownloadStatus.Verifying
-        val progress = TransferProgress(model.downloadedBytes, model.totalBytes).fraction
-        val percent = if (converting) model.conversionProgress else progress?.let { (it * 100).toInt() }
         return NotificationCompat.Builder(context, CHANNEL)
-            .setContentTitle(model.modelName)
-            .setContentText(when {
-                converting -> context.getString(when (model.conversionStatus) {
-                    ModelConversionStatus.Converting -> R.string.library_converting
-                    ModelConversionStatus.Finalizing -> R.string.library_conversion_finalizing
-                    else -> R.string.library_conversion_validating
-                })
-                verifying -> context.getString(R.string.library_verifying)
-                model.downloadStatus == DownloadStatus.Queued -> context.getString(R.string.library_preparing)
-                else -> context.getString(R.string.library_bytes, Formatter.formatShortFileSize(context, model.downloadedBytes))
-            })
+            .setContentTitle(title)
+            .setContentText(message)
             .setSmallIcon(R.drawable.ic_download)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(contentIntent)
-            .setProgress(100, percent ?: 0, verifying || percent == null)
+            .setProgress(100, percent ?: 0, percent == null)
             .build()
     }
 
