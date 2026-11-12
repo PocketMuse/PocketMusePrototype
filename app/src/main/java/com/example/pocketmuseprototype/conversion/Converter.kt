@@ -5,6 +5,8 @@ import androidx.annotation.WorkerThread
 import java.io.File
 import java.nio.charset.CharacterCodingException
 
+internal const val DEFAULT_HQQ_ITERATIONS = 0
+
 /**
  * Inputs use absolute filesystem paths. The template contains graph.bin and manifest.json.
  *
@@ -18,7 +20,7 @@ data class ConversionOptions(
     val templateDir: File,
     val outputDir: File,
     val chunkBytes: Int = 1024 * 1024,
-    val hqqIterations: Int = 0,
+    val hqqIterations: Int = DEFAULT_HQQ_ITERATIONS,
     val threadCount: Int = 1,
     val lcmLora: File? = null,
 )

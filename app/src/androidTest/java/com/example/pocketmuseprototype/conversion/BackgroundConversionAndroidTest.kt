@@ -319,7 +319,8 @@ class BackgroundConversionAndroidTest {
         block: suspend (LibraryDatabase) -> T
     ): T {
         val db = Room.databaseBuilder(app, LibraryDatabase::class.java, name)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3).build()
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+            .build()
         return try {
             block(db)
         } finally {

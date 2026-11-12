@@ -4,6 +4,13 @@
     <string name="tab_market">Market</string>
     <string name="tab_models">Library</string>
     <string name="open_menu">메뉴 열기</string>
+    <string name="conversion_settings_title">PocketMuse</string>
+    <string name="conversion_hqq_iterations">양자화 보정 횟수</string>
+    <string name="conversion_hqq_count">%1$d회</string>
+    <string name="conversion_hqq_description">횟수가 높을수록 최적화 시간이 길어질 수 있어요. 새 최적화 작업부터 적용돼요.</string>
+    <string name="conversion_hqq_save_error">보정 횟수를 저장하지 못했어요. 다시 조절해 주세요.</string>
+    <string name="conversion_hqq_read_error">보정 횟수 설정을 읽지 못했어요.</string>
+    <string name="conversion_hqq_read_retry">다시 시도</string>
     <string name="chat_input">채팅 입력</string>
     <string name="chat_placeholder">무엇이든 만들어 보세요</string>
     <string name="chat_send">전송</string>

@@ -489,6 +489,7 @@ private val String?.conversionErrorLabel: Int
         "INCOMPATIBLE_TEMPLATE", "TEMPLATE_INVALID" -> R.string.library_conversion_error_template
         "INTERRUPTED", "SCHEDULING" -> R.string.library_conversion_error_interrupted
         "OUTPUT_INVALID" -> R.string.library_conversion_error_output
+        "SETTINGS_UNAVAILABLE" -> R.string.conversion_hqq_read_error
         "CLEANUP_FAILED", "STALE_OUTPUT" -> R.string.library_conversion_error_cleanup
         else -> R.string.library_conversion_error_generic
     }
