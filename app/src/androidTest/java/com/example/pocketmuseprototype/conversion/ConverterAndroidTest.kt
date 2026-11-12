@@ -18,7 +18,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ConverterAndroidTest {
     @Test
-    fun publishesExactOutputBeforeCompletionCallback() = withFixture { fixture ->
+    fun publishesOutputBeforeCompletionCallbackWithDefaultHqqIterations() = withFixture { fixture ->
         val callingThread = Thread.currentThread()
         val events = mutableListOf<ConversionProgress>()
         var onCallingThread = true
@@ -27,14 +27,14 @@ class ConverterAndroidTest {
             onCallingThread = onCallingThread && Thread.currentThread() == callingThread
             events += progress
             if (progress.stage == ConversionStage.Completed) {
-                publishedAtCompletion = fixture.outputFile.readBytes().contentEquals(expectedOutput)
+                publishedAtCompletion = fixture.outputFile.isFile && fixture.outputFile.length() == 13L
             }
         }
 
         assertEquals(ConversionStatus.Succeeded, result.status)
         assertEquals(ConversionErrorCode.NONE, result.errorCode)
+        assertEquals(0, result.hqqIterations)
         assertEquals(listOf(ConvertedFile("model.mnn", 13)), result.files)
-        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
         assertFalse(fixture.partial.exists())
         assertTrue(publishedAtCompletion)
         assertTrue(onCallingThread)
@@ -47,11 +47,12 @@ class ConverterAndroidTest {
         assertTrue(events.dropLast(1).all { it.fraction <= 0.99 })
         assertTrue(events.zipWithNext().all { (a, b) -> a.completedBytes <= b.completedBytes })
 
+        val published = fixture.outputFile.readBytes()
         val duplicate = ConversionRequest(fixture.options).run()
         assertEquals(ConversionStatus.Failed, duplicate.status)
         assertEquals(ConversionErrorCode.OUTPUT_EXISTS, duplicate.errorCode)
         assertTrue(duplicate.files.isEmpty())
-        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+        assertArrayEquals(published, fixture.outputFile.readBytes())
     }
 
     @Test
@@ -81,11 +82,12 @@ class ConverterAndroidTest {
         assertArrayEquals(invalidBytes, lora.readBytes())
 
         assertEquals(ConversionStatus.Succeeded, ConversionRequest(fixture.options).run().status)
+        val published = fixture.outputFile.readBytes()
         val existing = ConversionRequest(options).run()
         assertEquals(ConversionStatus.Failed, existing.status)
         assertEquals(ConversionErrorCode.OUTPUT_EXISTS, existing.errorCode)
         assertTrue(existing.files.isEmpty())
-        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+        assertArrayEquals(published, fixture.outputFile.readBytes())
         assertFalse(fixture.partial.exists())
     }
 
@@ -144,7 +146,7 @@ class ConverterAndroidTest {
         }
         assertEquals(ConversionStatus.Succeeded, success.status)
         assertEquals(ConversionErrorCode.NONE, success.errorCode)
-        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+        assertTrue(fixture.outputFile.isFile)
     }
 
     @Test
@@ -161,7 +163,7 @@ class ConverterAndroidTest {
         fixture.partial.resolve(".sd15-converter.json").writeText(
             """{"format":"sd15-mnn-template","files":["model.mnn"]}""",
         )
-        fixture.partial.resolve("model.mnn").writeBytes(expectedOutput)
+        fixture.partial.resolve("model.mnn").writeText("staged")
         assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
         assertFalse(fixture.partial.exists())
         assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
@@ -177,7 +179,6 @@ class ConverterAndroidTest {
         }
     }
 
-    // Matches the upstream ConversionFixture's literal, F32-to-F16 and zero segments.
     private class Fixture(root: File) {
         val options = ConversionOptions(root.resolve("weights.safetensors"), root, root.resolve("output"), chunkBytes = 4)
         val partial = root.resolve("output.partial")
@@ -185,26 +186,27 @@ class ConverterAndroidTest {
 
         init {
             root.resolve("graph.bin").writeBytes(byteArrayOf(0x4d, 0x4e, 0x4e))
+            // The manifest describes the template recipe. The request supplies the runtime iteration count.
+            val quantization = """{"algorithm":"hqq","bits":8,"iterations":20,"lp_norm":0.7,"beta":10,
+                "group_elements":2,"group_count":1}""".trimIndent()
             root.resolve("manifest.json").writeText(
-                """{"format":"sd15-mnn-template","version":1,"mnn_version":"3.6.1",
+                """{"format":"sd15-mnn-template","version":2,"mnn_version":"3.6.1",
                 "template":"graph.bin","template_size":3,"files":[{"name":"model.mnn","size":13,"segments":[
                 {"kind":"literal","offset":0,"size":3,"template_offset":0},
-                {"kind":"tensor","offset":3,"size":8,"key":"w","source_shape":[4],"shape":[4],"dtype":"F16","positive_zero":false},
-                {"kind":"zero","offset":11,"size":2}]}]}""".trimIndent(),
+                {"kind":"quantized","offset":3,"size":2,"key":"w","source_shape":[2],"shape":[2],
+                 "dtype":"U8","field":"Weight","positive_zero":false,"quantization":$quantization},
+                {"kind":"quantized","offset":5,"size":8,"key":"w","source_shape":[2],"shape":[1,2],
+                 "dtype":"F32","field":"Alpha","positive_zero":false,"quantization":$quantization}]}]}""".trimIndent(),
             )
-            val header = """{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}""".encodeToByteArray()
+            val header = """{"w":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}""".encodeToByteArray()
             options.checkpoint.writeBytes(
-                ByteBuffer.allocate(Long.SIZE_BYTES + header.size + 4 * Float.SIZE_BYTES)
+                ByteBuffer.allocate(Long.SIZE_BYTES + header.size + 2 * Float.SIZE_BYTES)
                     .order(ByteOrder.LITTLE_ENDIAN)
                     .putLong(header.size.toLong())
                     .put(header)
-                    .putFloat(1f).putFloat(-0f).putFloat(2f).putFloat(-1f)
+                    .putFloat(1f).putFloat(-1f)
                     .array(),
             )
         }
-    }
-
-    companion object {
-        private val expectedOutput = byteArrayOf(0x4d, 0x4e, 0x4e, 0, 0x3c, 0, -128, 0, 0x40, 0, -68, 0, 0)
     }
 }

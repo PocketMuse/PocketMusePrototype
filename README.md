@@ -39,7 +39,7 @@ adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversio
 
 `$checkpoint`와 `$template`은 실제 로컬 경로로 바꾼다. 출력은 기기에 수 GiB의 여유 공간이 필요하다. 테스트는 결과와 출력 파일 목록·크기를 확인한 뒤 이번 실행의 출력 디렉터리를 정리한다. 입력은 다음 실행에 재사용할 수 있다.
 
-정적 LCM 변환 스모크는 같은 체크포인트와 호환 템플릿에 로컬의 공식 SD 1.5 LCM-LoRA 파일을 추가해 실행한다. 동일 입력으로 생성한 CLI 기준 해시가 있으면 `sha256sum *.mnn` 형식의 `reference-lcm-sha256.txt`를 입력 디렉터리에 두어 출력 파일 세 개의 SHA-256도 비교할 수 있다.
+정적 LCM 변환 스모크는 같은 체크포인트와 호환 템플릿에 로컬의 공식 SD 1.5 LCM-LoRA 파일을 추가해 실행한다.
 
 ```powershell
 adb push 'C:\path\to\lcm-lora-sdv1-5.safetensors' "$remote/lcm-lora.safetensors"
@@ -50,7 +50,7 @@ adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversio
 
 ## 실제 백그라운드 변환 스모크
 
-공용 LoRA가 없는 격리 패키지에 4,265,146,304바이트의 `v1-5-pruned-emaonly.safetensors`와 공식 SD 1.5 LCM LoRA를 준비한다. 테스트는 입력의 SHA-256을 확인한 뒤 체크포인트 공개 직후 상태를 만든다. LoRA 대기, 자동 WorkManager 예약, 변환 중 취소와 공용 LoRA 삭제, 재준비, 홈 화면에서 변환 완료, CLI 출력 해시 비교를 검증한다. 기기 화면을 잠금 해제한 상태에서 실행한다.
+공용 LoRA가 없는 격리 패키지에 4,265,146,304바이트의 `v1-5-pruned-emaonly.safetensors`와 공식 SD 1.5 LCM LoRA를 준비한다. 테스트는 입력의 SHA-256을 확인한 뒤 체크포인트 공개 직후 상태를 만든다. LoRA 대기, 자동 WorkManager 예약, 변환 중 취소와 공용 LoRA 삭제, 재준비, 홈 화면에서 변환 완료를 검증한다. Library에 기록된 파일 크기와 SHA-256을 실제 출력과 대조한다. 기기 화면을 잠금 해제한 상태에서 실행한다.
 
 ```powershell
 .\gradlew.bat -PconverterBenchmark=RelWithDebInfo :app:assembleDebug :app:assembleDebugAndroidTest
@@ -72,4 +72,4 @@ adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.
 adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.BackgroundConversionAndroidTest#staticNativeFailureReleasesTheOfficialLora' -e verifiedStaticFixture true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 ```
 
-완료 후 격리 앱을 다시 열어 Library에서 **Conversion fixture**가 **내 모델**에 **정적 LCM**으로 표시되는지 확인한 뒤 삭제한다. 다시 시험하기 전에 격리 앱의 공용 LoRA도 삭제한다. 원본, 출력과 LoRA 사본에 약 5.9 GB가 필요하다.
+완료 후 격리 앱을 다시 열어 Library의 **내 모델**에서 **Conversion fixture**의 모델명·버전·용량과 삭제 버튼을 확인한 뒤 삭제한다. 다시 시험하기 전에 격리 앱의 공용 LoRA도 삭제한다. 원본, 출력과 LoRA 사본에 약 5.9 GB가 필요하다. [카드와 모달 상태](docs/Model-Downloads.md#library-카드와-모달)

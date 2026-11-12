@@ -670,7 +670,8 @@ internal class ModelDownloads(
             ConversionStatus.Succeeded -> Unit
         }
         if (result.files.associate { it.name to it.sizeBytes } != hqq.files) throw ConversionFailure("OUTPUT_INVALID")
-        Log.d("ModelConversion", "Native conversion: ${result.elapsedMillis} ms, HQQ: ${result.hqqComputeMillis} ms")
+        Log.d("ModelConversion", "Native conversion: ${result.elapsedMillis} ms, " +
+            "HQQ: ${result.hqqComputeMillis} ms (${result.hqqIterations} iterations)")
     }
 
     private suspend fun runNative(request: ConversionRequest, publish: suspend (ConversionProgress) -> Unit) =
