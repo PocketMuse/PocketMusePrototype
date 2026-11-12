@@ -40,6 +40,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -62,6 +63,170 @@ class ModelDownloadsTest {
     private var listener = EventListener.NONE
     private var metadataHash: String? = null
     private var time = 0L
+    private val lora = "verified fixture".encodeToByteArray()
+    private val sharedWork = MutableStateFlow<SharedLcmWork?>(null)
+    private val loraStorage by lazy {
+        SharedLcmStorage(folder.root, lora.size.toLong(),
+            MessageDigest.getInstance("SHA-256").digest(lora).toHexString())
+    }
+    private val shared by lazy {
+        SharedLcmDownloads(loraStorage, object : SharedLcmScheduler {
+            override val work = sharedWork
+            override suspend fun enqueue() {
+                work.value = SharedLcmWork(UUID.randomUUID(), WorkInfo.State.ENQUEUED)
+            }
+            override suspend fun cancel(id: UUID) {
+                work.value = SharedLcmWork(id, WorkInfo.State.CANCELLED)
+            }
+        })
+    }
+
+    @Before fun publishLora() {
+        loraStorage.prepare().writeBytes(lora)
+        loraStorage.publish()
+    }
+
+    @Test fun publishedCheckpointWaitsUntilVerifiedLoraIsReady() = runBlocking {
+        loraStorage.removeFinal()
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        assertEquals(DownloadStatus.Downloaded, model.downloadStatus)
+        assertEquals(ModelConversionStatus.WaitingForLcm, model.conversionStatus)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+        assertTrue(conversions.enqueued.isEmpty())
+        // Give the asset the expected length but the wrong digest.
+        val invalid = loraStorage.prepare()
+        invalid.writeBytes(ByteArray(lora.size))
+        Files.move(invalid.toPath(), invalid.resolveSibling(Sd15LcmLora.FILE_NAME).toPath())
+        downloads.reconcile()
+        assertTrue(conversions.enqueued.isEmpty())
+
+        publishLora()
+        val reopened = downloads()
+        val first = async { reopened.reconcile() }
+        val duplicate = async { reopened.reconcile() }
+        first.await()
+        duplicate.await()
+        assertEquals(ModelConversionStatus.Queued, store.all().single().conversionStatus)
+        assertEquals(listOf(model.conversionWorkId), conversions.enqueued)
+    }
+
+    @Test fun concurrentReadyAndCheckpointCompletionScheduleExactlyOnce() = runBlocking {
+        loraStorage.removeFinal()
+        val downloads = downloads()
+        val model = enqueue(downloads)
+        val verifying = CompletableDeferred<Unit>()
+        val publishCheckpoint = CountDownLatch(1)
+        val finishing = async {
+            downloads.run(model.storageKey, model.workId, {}, notification = {
+                if (it.downloadStatus == DownloadStatus.Verifying) {
+                    verifying.complete(Unit)
+                    check(publishCheckpoint.await(10, TimeUnit.SECONDS))
+                }
+            })
+        }
+        try {
+            withTimeout(10_000) { verifying.await() }
+            publishLora()
+            val ready = async { downloads.reconcile() }
+            publishCheckpoint.countDown()
+            finishing.await()
+            ready.await()
+        } finally {
+            publishCheckpoint.countDown()
+        }
+        val queued = store.all().single()
+        assertEquals(ModelConversionStatus.Queued, queued.conversionStatus)
+        assertEquals(STATIC_LCM_RECIPE, queued.conversionRecipeId)
+        assertEquals(listOf(queued.conversionWorkId), conversions.enqueued)
+    }
+
+    @Test fun failedAndCancelledLoraKeepCheckpointUntilRedownload() = runBlocking {
+        assertTrue(shared.delete())
+        val downloads = downloads()
+        val waiting = downloadedFixture(downloads)
+        assertTrue(shared.ensure())
+        sharedWork.value = checkNotNull(sharedWork.value).copy(state = WorkInfo.State.FAILED, error = DownloadError.Network)
+        assertEquals(SharedLcmState.Failed(DownloadError.Network), shared.state.first())
+        downloads.reconcile()
+        assertTrue(shared.ensure())
+        assertEquals(SharedLcmCancellation.Cancelled, shared.cancel())
+        downloads.reconcile()
+        assertEquals(waiting, store.all().single())
+        assertTrue(storage.checkpoint(waiting.storageKey).isFile)
+        assertTrue(conversions.enqueued.isEmpty())
+        assertTrue(shared.ensure())
+        publishLora()
+        downloads.reconcile()
+        assertEquals(listOf(waiting.conversionWorkId), conversions.enqueued)
+    }
+
+    @Test fun readyEventSkipsDeletedAndCancelledModels() = runBlocking {
+        assertTrue(shared.delete())
+        val downloads = downloads()
+        val deleted = downloadedFixture(downloads)
+        val cancelled = enqueue(downloads, candidate(fileId = 31))
+        selectedFile = cancelled.fileId
+        run(downloads, cancelled)
+        downloads.remove(deleted)
+        downloads.cancelConversion(checkNotNull(store.find(cancelled.storageKey)))
+        publishLora()
+        downloads.reconcile()
+        assertTrue(conversions.enqueued.isEmpty())
+        assertFalse(storage.checkpoint(deleted.storageKey).exists())
+        assertEquals(ModelConversionStatus.Cancelled, store.all().single().conversionStatus)
+        assertTrue(storage.checkpoint(cancelled.storageKey).isFile)
+    }
+
+    @Test fun oneSharedLoraQueuesEachWaitingModelWithItsOwnOutputPath() = runBlocking {
+        assertTrue(shared.delete())
+        val downloads = downloads()
+        downloadedFixture(downloads)
+        val second = enqueue(downloads, candidate(fileId = 31))
+        selectedFile = second.fileId
+        run(downloads, second)
+        assertTrue(store.all().all { it.conversionStatus == ModelConversionStatus.WaitingForLcm })
+        publishLora()
+        downloads.reconcile()
+        downloads.reconcile()
+        val queued = store.all()
+        assertTrue(queued.all { it.conversionStatus == ModelConversionStatus.Queued })
+        assertEquals(queued.map { it.conversionWorkId }, conversions.enqueued)
+        val paths = queued.map { storage.conversionOutput(it.storageKey, checkNotNull(it.conversionWorkId)) }
+        assertEquals(2, paths.toSet().size)
+        assertTrue(queued.all { storage.checkpoint(it.storageKey).isFile })
+        assertTrue(shared.isReady())
+    }
+
+    @Test fun enqueueExceptionRecoversWithThePersistedAttemptId() = runBlocking {
+        conversions.failEnqueue = true
+        val downloads = downloads()
+        val queued = downloadedFixture(downloads)
+        assertEquals(ModelConversionStatus.Queued, queued.conversionStatus)
+        assertEquals("SCHEDULING", queued.conversionErrorCode)
+        assertTrue(conversions.enqueued.isEmpty())
+        conversions.failEnqueue = false
+        val reopened = downloads()
+        reopened.reconcile()
+        reopened.reconcile()
+        assertEquals(listOf(queued.conversionWorkId), conversions.enqueued)
+        assertNull(store.all().single().conversionErrorCode)
+    }
+
+    @Test fun loraDeletedBetweenSchedulingAndFileAcquisitionReturnsModelToWaiting() = runBlocking {
+        val downloads = downloads { HqqTemplate("fixture", folder.root, mapOf("fixture.mnn" to 4L)) }
+        val queued = downloadedFixture(downloads)
+        val id = checkNotNull(queued.conversionWorkId)
+        downloads.runConversion(queued.storageKey, id, { assertTrue(shared.delete()) }, {})
+        val waiting = store.all().single()
+        assertEquals(ModelConversionStatus.WaitingForLcm, waiting.conversionStatus)
+        assertTrue(waiting.conversionWorkId != id)
+        assertNull(waiting.conversionErrorCode)
+        assertTrue(storage.checkpoint(queued.storageKey).isFile)
+        publishLora()
+        downloads.reconcile()
+        assertEquals(listOf(id, waiting.conversionWorkId), conversions.enqueued)
+    }
 
     @Test fun streamsVerifiesPublishesAndKeepsThumbnailFailureNonfatal() = runBlocking {
         val downloads = downloads()
@@ -87,6 +252,7 @@ class ModelDownloadsTest {
         assertEquals(digest, store.all().single().sha256)
         val downloaded = store.all().single()
         assertEquals(ModelConversionStatus.Queued, downloaded.conversionStatus)
+        assertEquals(STATIC_LCM_RECIPE, downloaded.conversionRecipeId)
         assertEquals(listOf(downloaded.conversionWorkId), conversions.enqueued)
         assertTrue(storage.checkpoint(model.storageKey).readBytes().contentEquals(checkpoint))
         assertFalse(storage.partial(model.storageKey).exists())
@@ -175,6 +341,65 @@ class ModelDownloadsTest {
         assertEquals(2, conversions.enqueued.size)
     }
 
+    @Test fun legacyOutputSurvivesFailedReplacementAndRetiresAfterStaticPublication() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        val id = checkNotNull(model.conversionWorkId)
+        val oldOutput = storage.conversionOutput(model.storageKey, id).apply { check(mkdirs()) }
+        oldOutput.resolve("fixture.mnn").writeText("HQQ1")
+        store.update(model.copy(
+            conversionStatus = ModelConversionStatus.Finalizing,
+            conversionRecipeId = LEGACY_HQQ_RECIPE,
+            conversionTemplateId = "fixture",
+            conversionFiles = """{"fixture.mnn":4}"""
+        ))
+        conversions.states[id] = ScheduledState.Finished
+        downloads.reconcile()
+        val legacy = store.all().single()
+        assertEquals(ModelConversionStatus.Converted, legacy.conversionStatus)
+        assertEquals(LEGACY_HQQ_RECIPE, legacy.conversionRecipeId)
+        assertEquals(listOf(id), conversions.enqueued)
+
+        val source = storage.checkpoint(model.storageKey)
+        assertTrue(source.delete())
+        assertFalse(downloads.startConversion(legacy))
+        assertEquals(legacy, store.all().single())
+        assertTrue(oldOutput.isDirectory)
+        source.writeBytes(checkpoint)
+
+        assertTrue(downloads.startConversion(legacy))
+        val replacement = store.all().single()
+        val replacementId = checkNotNull(replacement.conversionWorkId)
+        assertTrue(id != replacementId)
+        downloads.runConversion(replacement.storageKey, replacementId, {}, {})
+        val failed = store.all().single()
+        assertEquals(ModelConversionStatus.Failed, failed.conversionStatus)
+        assertEquals(id, failed.legacyOutput?.workId)
+        assertEquals(legacy.conversionHashes, failed.legacyOutput?.hashes)
+        assertTrue(oldOutput.isDirectory)
+
+        assertTrue(downloads.startConversion(failed))
+        val retry = store.all().single()
+        val retryId = checkNotNull(retry.conversionWorkId)
+        val newOutput = storage.conversionOutput(retry.storageKey, retryId).apply { check(mkdirs()) }
+        newOutput.resolve("fixture.mnn").writeText("LCM1")
+        store.update(retry.copy(
+            conversionStatus = ModelConversionStatus.Finalizing,
+            conversionTemplateId = "fixture",
+            conversionFiles = """{"fixture.mnn":4}"""
+        ))
+        conversions.states[retryId] = ScheduledState.Finished
+        downloads.reconcile()
+        val converted = store.all().single()
+        assertEquals(ModelConversionStatus.Converted, converted.conversionStatus)
+        assertEquals(STATIC_LCM_RECIPE, converted.conversionRecipeId)
+        assertTrue(converted.conversionHashes != legacy.conversionHashes)
+        assertNull(converted.legacyOutput)
+        assertFalse(oldOutput.exists())
+        assertTrue(newOutput.isDirectory)
+        assertTrue(storage.checkpoint(model.storageKey).isFile)
+    }
+
     @Test fun recoversPublishedOutputAndRejectsSameSizeCorruption() = runBlocking {
         val downloads = downloads()
         val model = downloadedFixture(downloads)
@@ -187,10 +412,12 @@ class ModelDownloadsTest {
             conversionTemplateId = "fixture",
             conversionFiles = """{"fixture.mnn":4}"""
         ))
-        conversions.states[id] = ScheduledState.Finished
+        conversions.states.remove(id)
+        assertTrue(shared.delete())
         downloads.reconcile()
         val converted = store.all().single()
         assertEquals(ModelConversionStatus.Converted, converted.conversionStatus)
+        assertEquals(STATIC_LCM_RECIPE, converted.conversionRecipeId)
         assertTrue(converted.conversionHashes.orEmpty().contains(file.name))
         val timestamp = file.lastModified()
         file.writeText("MNN2")
@@ -569,7 +796,7 @@ class ModelDownloadsTest {
         return ModelDownloads(
             store, storage, scheduler, { token ?: throw DownloadFailure(DownloadError.AuthRequired) },
             CivitaiTransfer(client) { time.also { time += 600 } }, { _, _ -> error("Image request should fail") },
-            conversions, template
+            conversions, template, shared
         )
     }
 
@@ -587,7 +814,7 @@ class ModelDownloadsTest {
             }
             request.url.host == "civitai.com" -> {
                 assertEquals("Bearer fake-token", request.header("Authorization"))
-                assertEquals("30", request.url.queryParameter("fileId"))
+                assertEquals(selectedFile.toString(), request.url.queryParameter("fileId"))
                 assertNull(request.url.queryParameter("token"))
                 response.code(downloadCode).header("Location", "https://cdn.example/file?signature=fake")
                     .body("".toResponseBody()).build()
@@ -639,7 +866,9 @@ private class MemoryStore : LibraryStore {
 private class FakeScheduler : ModelWorkScheduler {
     val states = mutableMapOf<String, ScheduledState>()
     val enqueued = mutableListOf<String>()
+    var failEnqueue = false
     override suspend fun enqueue(key: String, id: String) {
+        if (failEnqueue) throw IOException("Scheduler unavailable")
         enqueued.add(id)
         states[id] = ScheduledState.Waiting
     }

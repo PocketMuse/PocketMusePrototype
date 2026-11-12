@@ -36,6 +36,7 @@ import coil3.compose.AsyncImage
 import com.example.pocketmuseprototype.R
 import com.example.pocketmuseprototype.download.DownloadError
 import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LEGACY_HQQ_RECIPE
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.ModelConversionStatus
@@ -60,7 +61,7 @@ internal fun LibraryScreen(
         model.downloadStatus.pending || model.downloadStatus == DownloadStatus.Cancelling ||
             model.downloadStatus == DownloadStatus.Deleting ||
             (model.downloadStatus == DownloadStatus.Downloaded &&
-                (model.conversionStatus.pending || model.conversionStatus == ModelConversionStatus.Cancelling))
+                (model.conversionStatus.canCancel || model.conversionStatus == ModelConversionStatus.Cancelling))
     }
     val lcmReady = sharedLcm == SharedLcmState.Ready
     val lcmInDownloads = sharedLcm != SharedLcmState.Missing && !lcmReady
@@ -71,6 +72,11 @@ internal fun LibraryScreen(
     ) {
         item { SectionTitle(R.string.library_downloads) }
         if (transfers.isEmpty() && !lcmInDownloads) item { EmptySection(R.string.library_downloads_empty) }
+        if (sharedLcm == SharedLcmState.Missing &&
+            transfers.any { it.model.conversionStatus == ModelConversionStatus.WaitingForLcm }
+        ) {
+            item { TextButton(onClick = onRetryLcm) { Text(stringResource(R.string.library_lcm_download)) } }
+        }
         if (lcmInDownloads) item(key = Sd15LcmLora.ID) { SharedLcmCard(sharedLcm, onRetryLcm, onCancelLcm, onDeleteLcm) }
         items(transfers, key = { it.model.storageKey }) { ModelCard(it, onRemove, onStartConversion, onCancelConversion) }
 
@@ -256,13 +262,20 @@ private fun ConversionDetails(
     val status = model.conversionStatus
     val colors = MaterialTheme.colorScheme
     val percent = model.conversionProgress
-    val label = if (status == ModelConversionStatus.Converting && percent != null) {
-        stringResource(R.string.library_conversion_percent, percent)
-    } else stringResource(status.label)
+    val label = when {
+        status == ModelConversionStatus.Converting && percent != null ->
+            stringResource(R.string.library_conversion_percent, percent)
+        status == ModelConversionStatus.Converted && model.conversionRecipeId == LEGACY_HQQ_RECIPE ->
+            stringResource(R.string.library_converted_legacy)
+        else -> stringResource(status.label)
+    }
     Text(label, style = MaterialTheme.typography.labelLarge,
         color = if (status == ModelConversionStatus.Failed) colors.error else colors.onSurfaceVariant)
     if (status == ModelConversionStatus.Failed) {
         Text(stringResource(model.conversionErrorCode.conversionErrorLabel), style = MaterialTheme.typography.bodySmall)
+    }
+    if (model.legacyOutput != null && status != ModelConversionStatus.Converted) {
+        Text(stringResource(R.string.library_converted_legacy), style = MaterialTheme.typography.bodySmall)
     }
     if (status.pending) {
         if (percent == null) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -270,13 +283,15 @@ private fun ConversionDetails(
     }
     if (status != ModelConversionStatus.Cancelling) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            if (status.canStart) {
+            if (model.canStartConversion) {
                 TextButton(onClick = { onStart(model) }) {
-                    Text(stringResource(if (status == ModelConversionStatus.NotStarted) {
-                        R.string.library_convert
-                    } else R.string.library_convert_retry))
+                    Text(stringResource(when (status) {
+                        ModelConversionStatus.NotStarted -> R.string.library_convert
+                        ModelConversionStatus.Converted -> R.string.library_convert_static_lcm
+                        else -> R.string.library_convert_retry
+                    }))
                 }
-            } else if (status.pending) {
+            } else if (status.canCancel) {
                 TextButton(onClick = { onCancel(model) }) { Text(stringResource(R.string.library_cancel)) }
             }
             TextButton(onClick = { onRemove(model) }) { Text(stringResource(R.string.library_delete)) }
@@ -287,6 +302,7 @@ private fun ConversionDetails(
 private val ModelConversionStatus.label: Int
     @StringRes get() = when (this) {
         ModelConversionStatus.NotStarted -> R.string.library_conversion_not_started
+        ModelConversionStatus.WaitingForLcm -> R.string.library_conversion_waiting_lcm
         ModelConversionStatus.Queued -> R.string.library_conversion_queued
         ModelConversionStatus.Validating -> R.string.library_conversion_validating
         ModelConversionStatus.Converting -> R.string.library_converting

@@ -44,7 +44,7 @@ internal interface SharedLcmScheduler {
     suspend fun cancel(id: UUID)
 }
 
-/** The app, Worker, and future conversion callers share this process-scoped owner. */
+/** The app and both Workers share this process-scoped owner. */
 internal class SharedLcmDownloads(
     private val storage: SharedLcmStorage,
     private val scheduler: SharedLcmScheduler,
@@ -91,6 +91,17 @@ internal class SharedLcmDownloads(
     }
 
     private fun refresh() = revision.update { it + 1 }
+
+    /** Readiness is a scheduling hint. Native consumers must acquire [withVerifiedFile]. */
+    suspend fun isReady(): Boolean = withContext(Dispatchers.IO) {
+        files.withLock {
+            try {
+                storage.problem() == null
+            } catch (_: IOException) {
+                false
+            }
+        }
+    }
 
     suspend fun reconcile() = commands.withLock {
         try {

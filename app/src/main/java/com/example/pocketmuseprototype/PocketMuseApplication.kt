@@ -16,6 +16,7 @@ import com.example.pocketmuseprototype.download.LibraryDatabase
 import com.example.pocketmuseprototype.download.ModelDownloads
 import com.example.pocketmuseprototype.download.ModelStorage
 import com.example.pocketmuseprototype.download.SharedLcmDownloads
+import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.download.SharedLcmStorage
 import com.example.pocketmuseprototype.download.WorkManagerDownloads
 import com.example.pocketmuseprototype.download.WorkManagerConversions
@@ -25,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import net.openid.appauth.internal.AppAuthLogging
@@ -45,7 +47,7 @@ class PocketMuseApplication : Application() {
     }
     internal val downloads by lazy {
         val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2)
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3)
             .build()
         ModelDownloads(
             library.models(),
@@ -65,7 +67,8 @@ class PocketMuseApplication : Application() {
             CivitaiTransfer(),
             ::writeWebpThumbnail,
             conversionScheduler,
-            BundledHqqTemplate(this)::load
+            BundledHqqTemplate(this)::load,
+            sharedLcm
         )
     }
 
@@ -73,7 +76,8 @@ class PocketMuseApplication : Application() {
         super.onCreate()
         AppAuthLogging.disable()
         appScope.launch {
-            merge(downloadScheduler.changes, conversionScheduler.changes).collect { downloads.reconcile() }
+            merge(downloadScheduler.changes, conversionScheduler.changes,
+                sharedLcm.state.filter { it == SharedLcmState.Ready }).collect { downloads.reconcile() }
         }
     }
 }

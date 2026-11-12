@@ -74,6 +74,7 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets.getByName("androidTest").assets.srcDir("schemas")
 }
 
 dependencies {

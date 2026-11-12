@@ -84,12 +84,16 @@
     <string name="library_convert">변환</string>
     <string name="library_convert_retry">변환 재시도</string>
     <string name="library_conversion_not_started">변환 전</string>
+    <string name="library_conversion_waiting_lcm">LCM LoRA 대기 중</string>
+    <string name="library_lcm_download">LCM LoRA 다운로드</string>
+    <string name="library_convert_static_lcm">정적 LCM으로 변환</string>
     <string name="library_conversion_queued">변환 대기 중</string>
     <string name="library_conversion_validating">변환 입력 확인 중</string>
     <string name="library_converting">HQQ 변환 중</string>
     <string name="library_conversion_percent">HQQ 변환 중 · %1$d%%</string>
     <string name="library_conversion_finalizing">변환 결과 확인 중</string>
-    <string name="library_converted">HQQ 변환 완료</string>
+    <string name="library_converted">정적 LCM 변환 완료</string>
+    <string name="library_converted_legacy">Legacy HQQ 변환 완료</string>
     <string name="library_conversion_failed">변환 실패</string>
     <string name="library_conversion_cancelling">변환 취소 중</string>
     <string name="library_conversion_cancelled">변환 취소됨</string>

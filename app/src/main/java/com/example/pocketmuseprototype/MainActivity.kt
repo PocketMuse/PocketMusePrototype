@@ -97,7 +97,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onDownloadRequest = { enqueue(it, snackbar) },
                     onRemoveModel = { model -> app.appScope.launch { app.downloads.remove(model) } },
-                    onStartConversion = { model -> app.appScope.launch { app.downloads.startConversion(model) } },
+                    onStartConversion = { model ->
+                        app.appScope.launch {
+                            if (app.downloads.startConversion(model)) ensureSharedLcm()
+                        }
+                    },
                     onCancelConversion = { model -> app.appScope.launch { app.downloads.cancelConversion(model) } },
                     snackbar = snackbar,
                     libraryRequest = libraryRequest

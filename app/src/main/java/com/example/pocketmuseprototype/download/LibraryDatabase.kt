@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.ColumnInfo
 import androidx.room.Database
 import androidx.room.Delete
+import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.Insert
 import androidx.room.PrimaryKey
@@ -31,14 +32,27 @@ internal enum class DownloadError {
 internal class DownloadFailure(val code: DownloadError) : IOException()
 
 internal enum class ModelConversionStatus {
-    NotStarted, Queued, Validating, Converting, Finalizing, Converted, Failed, Cancelling, Cancelled;
+    NotStarted, WaitingForLcm, Queued, Validating, Converting, Finalizing, Converted, Failed, Cancelling, Cancelled;
 
     val pending: Boolean
         get() = this == Queued || this == Validating || this == Converting || this == Finalizing
 
+    val canCancel: Boolean
+        get() = pending || this == WaitingForLcm
+
     val canStart: Boolean
         get() = this == NotStarted || this == Failed || this == Cancelled
 }
+
+internal const val LEGACY_HQQ_RECIPE = "sd15-hqq-b128-v1"
+internal const val STATIC_LCM_RECIPE = "sd15-static-lcm-v1"
+
+internal data class LegacyOutput(
+    val workId: String,
+    val templateId: String,
+    val files: String,
+    val hashes: String
+)
 
 @Entity(tableName = "models")
 internal data class LibraryModel(
@@ -64,8 +78,14 @@ internal data class LibraryModel(
     val conversionErrorCode: String? = null,
     val conversionTemplateId: String? = null,
     val conversionFiles: String? = null,
-    val conversionHashes: String? = null
-)
+    val conversionHashes: String? = null,
+    val conversionRecipeId: String? = null,
+    @Embedded(prefix = "legacyOutput_") val legacyOutput: LegacyOutput? = null
+) {
+    val canStartConversion: Boolean
+        get() = conversionStatus.canStart ||
+            (conversionStatus == ModelConversionStatus.Converted && conversionRecipeId == LEGACY_HQQ_RECIPE)
+}
 
 internal interface LibraryStore {
     fun observe(): Flow<List<LibraryModel>>
@@ -97,7 +117,7 @@ internal interface LibraryDao : LibraryStore {
     override suspend fun delete(model: LibraryModel)
 }
 
-@Database(entities = [LibraryModel::class], version = 2)
+@Database(entities = [LibraryModel::class], version = 3)
 internal abstract class LibraryDatabase : RoomDatabase() {
     abstract fun models(): LibraryDao
 
@@ -112,6 +132,16 @@ internal abstract class LibraryDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE models ADD COLUMN conversionTemplateId TEXT")
                 db.execSQL("ALTER TABLE models ADD COLUMN conversionFiles TEXT")
                 db.execSQL("ALTER TABLE models ADD COLUMN conversionHashes TEXT")
+            }
+        }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionRecipeId TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_workId TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_templateId TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_files TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_hashes TEXT")
+                db.execSQL("UPDATE models SET conversionRecipeId = 'sd15-hqq-b128-v1' WHERE conversionWorkId IS NOT NULL")
             }
         }
     }

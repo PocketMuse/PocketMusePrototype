@@ -9,22 +9,33 @@ import android.util.Log
 import androidx.room.Room
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.pocketmuseprototype.MainActivity
 import com.example.pocketmuseprototype.PocketMuseApplication
 import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LEGACY_HQQ_RECIPE
 import com.example.pocketmuseprototype.download.LibraryDatabase
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.download.ModelStorage
+import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
+import com.example.pocketmuseprototype.download.Sd15LcmLora
+import com.example.pocketmuseprototype.download.SharedLcmState
+import com.example.pocketmuseprototype.download.SharedLcmStorage
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -102,17 +113,69 @@ class BackgroundConversionAndroidTest {
         }
     }
 
-    @Test fun recoveredDownloadStartsTheRealWorkerAndReportsTensorMismatch() = runBlocking {
+    @Test fun migratesActualVersionTwoSchemaWithoutChangingExistingAttempts() = runBlocking {
+        val name = "library-v2-${UUID.randomUUID()}"
+        val file = app.getDatabasePath(name)
+        file.parentFile?.mkdirs()
+        val schema = instrumentation.context.assets
+            .open("${LibraryDatabase::class.java.name}/2.json").bufferedReader().use {
+                Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject
+            }
+        val states = listOf(ModelConversionStatus.NotStarted, ModelConversionStatus.Queued,
+            ModelConversionStatus.Converting, ModelConversionStatus.Converted,
+            ModelConversionStatus.Failed, ModelConversionStatus.Cancelled)
+        val rows = states.mapIndexed { index, state ->
+            val version = (index + 1).toLong()
+            val attempt = index.takeIf { it > 0 }?.let { UUID.randomUUID().toString() }
+            LibraryModel("${version}_31", 10, version, 31, "Fixture", "v1", "fixture.safetensors",
+                40, "source-sha", "https://example.test/image", "download-$index",
+                DownloadStatus.Downloaded, 40, 40, null,
+                state, attempt, index, if (state == ModelConversionStatus.Failed) "INTERRUPTED" else null,
+                attempt?.let { "sd15-hqq-b128-manual-v1" }, attempt?.let { """{"unet.mnn":40}""" },
+                if (state == ModelConversionStatus.Converted) """{"unet.mnn":"prior-hash"}""" else null)
+        }
+        try {
+            SQLiteDatabase.openOrCreateDatabase(file, null).use { db ->
+                val entity = schema.getValue("entities").jsonArray.single().jsonObject
+                db.execSQL(entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", "models"))
+                schema.getValue("setupQueries").jsonArray.forEach { db.execSQL(it.jsonPrimitive.content) }
+                for (row in rows) {
+                    db.execSQL("INSERT INTO models VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", arrayOf<Any?>(
+                        row.storageKey, row.modelId, row.modelVersionId, row.fileId, row.modelName, row.versionName,
+                        row.fileName, row.fileSize, row.sha256, row.thumbnailUrl, row.workId, row.downloadStatus.name,
+                        row.downloadedBytes, row.totalBytes, row.errorCode, row.conversionStatus.name,
+                        row.conversionWorkId, row.conversionProgress, row.conversionErrorCode,
+                        row.conversionTemplateId, row.conversionFiles, row.conversionHashes
+                    ))
+                }
+                db.version = 2
+            }
+            withDatabase(name) { db ->
+                assertEquals(rows.map { row -> row.copy(
+                    conversionRecipeId = row.conversionWorkId?.let { LEGACY_HQQ_RECIPE }
+                ) }, db.models().all())
+            }
+        } finally {
+            app.deleteDatabase(name)
+        }
+        Unit
+    }
+
+    @Test fun legacyAttemptStartsTheRealWorkerWithoutLoraAndReportsTensorMismatch() = runBlocking {
         val key = "90201_90202"
-        val storage = ModelStorage { app.getExternalFilesDir(null) }
         ActivityScenario.launch(MainActivity::class.java).use {
-            val header = """{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}""".encodeToByteArray()
-            storage.prepare(key)
-            val checkpoint = storage.checkpoint(key)
-            checkpoint.writeBytes(ByteBuffer.allocate(12 + header.size).order(ByteOrder.LITTLE_ENDIAN)
-                .putLong(header.size.toLong()).put(header).putInt(0).array())
+            val checkpoint = writeIncompleteCheckpoint(key)
             try {
-                seedPublishedDownload(key, checkpoint)
+                val model = publishedDownload(key, checkpoint)
+                withDatabase {
+                    it.models().insert(model.copy(
+                        downloadStatus = DownloadStatus.Downloaded,
+                        conversionStatus = ModelConversionStatus.Queued,
+                        conversionWorkId = UUID.randomUUID().toString(),
+                        conversionRecipeId = LEGACY_HQQ_RECIPE
+                    ))
+                }
+                app.downloads.reconcile()
                 val failed = awaitModel(key) { it.conversionStatus == ModelConversionStatus.Failed }
                 assertEquals(DownloadStatus.Downloaded, failed.downloadStatus)
                 assertEquals("TENSOR_MISMATCH", failed.conversionErrorCode)
@@ -125,23 +188,81 @@ class BackgroundConversionAndroidTest {
         }
     }
 
+    @Test fun staticNativeFailureReleasesTheOfficialLora() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("verifiedStaticFixture") == "true")
+        check(app.packageName.endsWith(".converterbenchmark"))
+        val key = "90401_90402"
+        assertEquals(SharedLcmState.Ready, app.sharedLcm.state.first())
+        ActivityScenario.launch(MainActivity::class.java).use {
+            val checkpoint = writeIncompleteCheckpoint(key)
+            try {
+                seedPublishedDownload(key, checkpoint)
+                val failed = awaitModel(key) { it.conversionStatus == ModelConversionStatus.Failed }
+                assertEquals(STATIC_LCM_RECIPE, failed.conversionRecipeId)
+                assertEquals("TENSOR_MISMATCH", failed.conversionErrorCode)
+                assertTrue(checkpoint.isFile)
+                app.downloads.remove(failed)
+                assertFalse(checkpoint.exists())
+                val size = withTimeout(10_000) { app.sharedLcm.withVerifiedFile { it.length() } }
+                assertEquals(Sd15LcmLora.SIZE, size)
+            } finally {
+                removeFixture(key)
+            }
+        }
+    }
+
+    private fun writeIncompleteCheckpoint(key: String): File {
+        val storage = ModelStorage { app.getExternalFilesDir(null) }
+        val header = """{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}""".encodeToByteArray()
+        storage.prepare(key)
+        return storage.checkpoint(key).apply {
+            writeBytes(ByteBuffer.allocate(12 + header.size).order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(header.size.toLong()).put(header).putInt(0).array())
+        }
+    }
+
     @Test fun realCheckpointCancelsThenCompletesInBackground() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("realBackgroundConversion") == "true")
+        check(app.packageName.endsWith(".converterbenchmark"))
         val key = "90301_90302"
         val storage = ModelStorage { app.getExternalFilesDir(null) }
         val checkpoint = storage.checkpoint(key)
         assertEquals(4_265_146_304L, checkpoint.length())
+        assertEquals(CHECKPOINT_HASH, checkpoint.sha256())
+        val loraInput = File(app.getExternalFilesDir(null), "converter-smoke/lcm-lora.safetensors")
+        assertEquals(Sd15LcmLora.SIZE, loraInput.length())
+        assertEquals(Sd15LcmLora.SHA256, loraInput.sha256())
+        val shared = SharedLcmStorage(app.noBackupFilesDir)
+        assertEquals(SharedLcmState.Missing, app.sharedLcm.state.first())
+        fun publishLora() {
+            loraInput.copyTo(shared.prepare(), overwrite = true)
+            shared.publish()
+        }
         ActivityScenario.launch(MainActivity::class.java).use {
             seedPublishedDownload(key, checkpoint)
+            val waiting = awaitModel(key) { it.conversionStatus == ModelConversionStatus.WaitingForLcm }
+            val manager = WorkManager.getInstance(app)
+            val waitingId = UUID.fromString(checkNotNull(waiting.conversionWorkId))
+            assertNull(manager.getWorkInfoByIdFlow(waitingId).first())
+            publishLora()
+            app.sharedLcm.reconcile()
             val running = awaitModel(key) { it.conversionStatus == ModelConversionStatus.Converting }
+            assertEquals(waiting.conversionWorkId, running.conversionWorkId)
+            val deleteLora = async { app.sharedLcm.delete() }
+            assertTrue(app.sharedLcm.isReady())
             app.downloads.cancelConversion(running)
             val cancelled = awaitModel(key) { it.conversionStatus == ModelConversionStatus.Cancelled }
+            assertTrue(withTimeout(60_000) { deleteLora.await() })
+            assertEquals(SharedLcmState.Missing, app.sharedLcm.state.first())
             val oldOutput = storage.conversionOutput(key, checkNotNull(cancelled.conversionWorkId))
             assertFalse(oldOutput.exists())
             assertFalse(oldOutput.resolveSibling("${oldOutput.name}.partial").exists())
             assertTrue(checkpoint.isFile)
+            assertTrue(app.downloads.startConversion(cancelled))
+            awaitModel(key) { it.conversionStatus == ModelConversionStatus.WaitingForLcm }
+            publishLora()
             val start = SystemClock.elapsedRealtime()
-            app.downloads.startConversion(cancelled)
+            app.sharedLcm.reconcile()
             awaitModel(key) { it.conversionStatus == ModelConversionStatus.Converting }
             ParcelFileDescriptor.AutoCloseInputStream(
                 instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME")
@@ -149,20 +270,36 @@ class BackgroundConversionAndroidTest {
             val completed = awaitModel(key) { it.conversionStatus == ModelConversionStatus.Converted }
             val seconds = (SystemClock.elapsedRealtime() - start) / 1_000.0
             Log.i("BackgroundConversionTest", "Retry through Library registration took ${seconds}s")
-            val output = storage.conversionOutput(key, checkNotNull(completed.conversionWorkId))
+            assertEquals(STATIC_LCM_RECIPE, completed.conversionRecipeId)
+            val id = checkNotNull(completed.conversionWorkId)
+            val finished = withTimeout(60_000) {
+                manager.getWorkInfoByIdFlow(UUID.fromString(id)).first { it?.state?.isFinished == true }
+            }
+            assertEquals(WorkInfo.State.SUCCEEDED, finished?.state)
+            val output = storage.conversionOutput(key, id)
             val sizes = Json.decodeFromString<Map<String, Long>>(checkNotNull(completed.conversionFiles))
             assertEquals(sizes, output.listFiles()?.associate { it.name to it.length() })
+            val hashes = Json.decodeFromString<Map<String, String>>(checkNotNull(completed.conversionHashes))
+            assertEquals(CLI_HASHES, hashes)
+            assertEquals(CLI_HASHES, output.listFiles()?.associate { it.name to it.sha256() })
+            assertFalse(output.resolveSibling("${output.name}.partial").exists())
             assertEquals(4_265_146_304L, checkpoint.length())
+            assertEquals(SharedLcmState.Ready, app.sharedLcm.state.first())
+            app.downloads.reconcile()
+            assertEquals(completed, awaitModel(key) { it.conversionStatus == ModelConversionStatus.Converted })
         }
     }
 
     private suspend fun seedPublishedDownload(key: String, checkpoint: File) {
+        withDatabase { it.models().insert(publishedDownload(key, checkpoint)) }
+        app.downloads.reconcile()
+    }
+
+    private fun publishedDownload(key: String, checkpoint: File): LibraryModel {
         val (version, file) = key.split('_').map(String::toLong)
-        val model = LibraryModel(key, 1, version, file, "Conversion fixture", "v1", checkpoint.name,
+        return LibraryModel(key, 1, version, file, "Conversion fixture", "v1", checkpoint.name,
             checkpoint.length(), null, null, UUID.randomUUID().toString(),
             DownloadStatus.Verifying, checkpoint.length(), checkpoint.length())
-        withDatabase { it.models().insert(model) }
-        app.downloads.reconcile()
     }
 
     private suspend fun awaitModel(key: String, predicate: (LibraryModel) -> Boolean) =
@@ -182,11 +319,20 @@ class BackgroundConversionAndroidTest {
         block: suspend (LibraryDatabase) -> T
     ): T {
         val db = Room.databaseBuilder(app, LibraryDatabase::class.java, name)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2).build()
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3).build()
         return try {
             block(db)
         } finally {
             db.close()
         }
+    }
+
+    private companion object {
+        const val CHECKPOINT_HASH = "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa"
+        val CLI_HASHES = mapOf(
+            "text_encoder.mnn" to "1f9a7b80805b4df460e10339d4401287a2e9cd628ff247dae05a0f9e148c1cfc",
+            "unet.mnn" to "3f06996145268ccd462f1d9e3b7707c5cc71773aadcb009f11bcc5b852c70763",
+            "vae_decoder.mnn" to "6b44712b4ba3e7b04ec1b3739bb99e0f5fb0325331fc4e49acf42ba84c82cc4f"
+        )
     }
 }
