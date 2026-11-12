@@ -32,9 +32,11 @@ import com.example.pocketmuseprototype.catalog.ModelsResponse
 import com.example.pocketmuseprototype.catalog.PageMetadata
 import com.example.pocketmuseprototype.catalog.VersionDto
 import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LEGACY_HQQ_RECIPE
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.ModelConversionStatus
+import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
 import java.io.IOException
@@ -102,7 +104,8 @@ class AppNavigationTest {
             onConvert = {
                 model.value = if (it.conversionStatus == ModelConversionStatus.NotStarted) {
                     it.copy(conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
-                } else it.copy(conversionStatus = ModelConversionStatus.Converted, conversionProgress = 100)
+                } else it.copy(conversionStatus = ModelConversionStatus.Converted, conversionProgress = 100,
+                    conversionRecipeId = STATIC_LCM_RECIPE)
             },
             onCancelConversion = {
                 model.value = it.copy(conversionStatus = ModelConversionStatus.Cancelled, conversionProgress = null)
@@ -118,6 +121,30 @@ class AppNavigationTest {
         compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_convert_retry)).performClick()
         compose.onNodeWithText(string(R.string.library_converted)).assertIsDisplayed()
+    }
+
+    @Test
+    fun libraryShowsLoraWaitAndLetsUserReplaceLegacyOutput() {
+        val legacy = LibraryModel("1_1", 1, 1, 1, "Checkpoint 1", "Version 1", "fixture.safetensors",
+            100_000_000L, null, null, "fixture", DownloadStatus.Downloaded,
+            conversionStatus = ModelConversionStatus.Converted, conversionRecipeId = LEGACY_HQQ_RECIPE)
+        val model = mutableStateOf(legacy)
+        launchApp(
+            library = { listOf(LibraryItem(model.value, null)) },
+            onConvert = {
+                model.value = it.copy(conversionStatus = ModelConversionStatus.WaitingForLcm,
+                    conversionRecipeId = STATIC_LCM_RECIPE)
+            },
+            onCancelConversion = { model.value = it.copy(conversionStatus = ModelConversionStatus.Cancelled) }
+        ) { page(1..1) }
+
+        compose.onNodeWithText("Library").performClick()
+        compose.onNodeWithText(string(R.string.library_converted_legacy)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_convert_static_lcm)).performClick()
+        compose.onNodeWithText(string(R.string.library_conversion_waiting_lcm)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_lcm_download)).assertIsEnabled()
+        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
     }
 
     @Test

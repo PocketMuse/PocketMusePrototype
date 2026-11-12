@@ -1,0 +1,173 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "28c0baa1c1f5ab7f9fa8ec043db4c594",
+    "entities": [
+      {
+        "tableName": "models",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`storageKey` TEXT NOT NULL, `modelId` INTEGER NOT NULL, `modelVersionId` INTEGER NOT NULL, `fileId` INTEGER NOT NULL, `modelName` TEXT NOT NULL, `versionName` TEXT NOT NULL, `fileName` TEXT NOT NULL, `fileSize` INTEGER NOT NULL, `sha256` TEXT, `thumbnailUrl` TEXT, `workId` TEXT NOT NULL, `downloadStatus` TEXT NOT NULL, `downloadedBytes` INTEGER NOT NULL, `totalBytes` INTEGER, `errorCode` TEXT, `conversionStatus` TEXT NOT NULL DEFAULT 'NotStarted', `conversionWorkId` TEXT, `conversionProgress` INTEGER, `conversionErrorCode` TEXT, `conversionTemplateId` TEXT, `conversionFiles` TEXT, `conversionHashes` TEXT, `conversionRecipeId` TEXT, `legacyOutput_workId` TEXT, `legacyOutput_templateId` TEXT, `legacyOutput_files` TEXT, `legacyOutput_hashes` TEXT, PRIMARY KEY(`storageKey`))",
+        "fields": [
+          {
+            "fieldPath": "storageKey",
+            "columnName": "storageKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelVersionId",
+            "columnName": "modelVersionId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "fileId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelName",
+            "columnName": "modelName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionName",
+            "columnName": "versionName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileName",
+            "columnName": "fileName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileSize",
+            "columnName": "fileSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "thumbnailUrl",
+            "columnName": "thumbnailUrl",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "workId",
+            "columnName": "workId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "downloadStatus",
+            "columnName": "downloadStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "downloadedBytes",
+            "columnName": "downloadedBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalBytes",
+            "columnName": "totalBytes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionStatus",
+            "columnName": "conversionStatus",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'NotStarted'"
+          },
+          {
+            "fieldPath": "conversionWorkId",
+            "columnName": "conversionWorkId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionProgress",
+            "columnName": "conversionProgress",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "conversionErrorCode",
+            "columnName": "conversionErrorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionTemplateId",
+            "columnName": "conversionTemplateId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionFiles",
+            "columnName": "conversionFiles",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionHashes",
+            "columnName": "conversionHashes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "conversionRecipeId",
+            "columnName": "conversionRecipeId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "legacyOutput.workId",
+            "columnName": "legacyOutput_workId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "legacyOutput.templateId",
+            "columnName": "legacyOutput_templateId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "legacyOutput.files",
+            "columnName": "legacyOutput_files",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "legacyOutput.hashes",
+            "columnName": "legacyOutput_hashes",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "storageKey"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '28c0baa1c1f5ab7f9fa8ec043db4c594')"
+    ]
+  }
+}

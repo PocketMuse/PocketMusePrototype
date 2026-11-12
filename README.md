@@ -1,16 +1,18 @@
 # PocketMusePrototype
 
-Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받는다. 다운로드 검증이 끝나면 기기에서 SD 1.5 HQQ 변환을 예약하고 Library에 결과를 표시한다. [변환과 JNI 계약](docs/Converter.md)
+Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받는다. 체크포인트와 공식 SD 1.5 LCM LoRA가 모두 검증되면 기기에서 정적 LCM 병합과 HQQ 변환을 예약하고 Library에 결과를 표시한다. [변환과 JNI 계약](docs/Converter.md)
+
+Market에서 체크포인트 다운로드를 요청하면 공용 SD1.5 LCM LoRA도 별도 작업으로 준비한다. 진행률, 실패 재시도 및 삭제는 Library에서 확인할 수 있다. [공용 LoRA 다운로드 계약](docs/Model-Downloads.md#공용-sd15-lcm-lora)
 
 ## 빌드와 테스트
 
-JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 체크섬이 고정된 nlohmann/json 소스를 가져온다.
+JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 SHA-512가 고정된 nlohmann/json 3.12.0과 PicoSHA2 1.0.1 소스를 가져온다.
 
 Windows 프로젝트 루트에서 실행한다.
 
 ```powershell
 git submodule update --init third_party/to-mnn
-.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+.\gradlew.bat :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:lintDebug
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
@@ -37,9 +39,18 @@ adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversio
 
 `$checkpoint`와 `$template`은 실제 로컬 경로로 바꾼다. 출력은 기기에 수 GiB의 여유 공간이 필요하다. 테스트는 결과와 출력 파일 목록·크기를 확인한 뒤 이번 실행의 출력 디렉터리를 정리한다. 입력은 다음 실행에 재사용할 수 있다.
 
+정적 LCM 변환 스모크는 같은 체크포인트와 호환 템플릿에 로컬의 공식 SD 1.5 LCM-LoRA 파일을 추가해 실행한다. 동일 입력으로 생성한 CLI 기준 해시가 있으면 `sha256sum *.mnn` 형식의 `reference-lcm-sha256.txt`를 입력 디렉터리에 두어 출력 파일 세 개의 SHA-256도 비교할 수 있다.
+
+```powershell
+adb push 'C:\path\to\lcm-lora-sdv1-5.safetensors' "$remote/lcm-lora.safetensors"
+adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversion.ConverterSmokeTest -e converterLcmSmoke true com.example.pocketmuseprototype.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+기존 앱 설치를 유지하며 두 스모크를 실행하려면 [격리 패키지 빌드와 실행 방법](docs/Converter.md#네이티브-빌드-성능-재현)을 따른다.
+
 ## 실제 백그라운드 변환 스모크
 
-격리 패키지에 4,265,146,304바이트의 `v1-5-pruned-emaonly.safetensors`를 준비한다. 테스트는 이미 검증된 다운로드의 공개 직후 상태를 만들어 실제 WorkManager와 APK 내장 템플릿을 사용한다. 변환 중 취소한 뒤 다시 시작하고, 기기를 홈 화면으로 전환해 완료를 기다린다. 기기 화면을 잠금 해제한 상태에서 실행한다.
+공용 LoRA가 없는 격리 패키지에 4,265,146,304바이트의 `v1-5-pruned-emaonly.safetensors`와 공식 SD 1.5 LCM LoRA를 준비한다. 테스트는 입력의 SHA-256을 확인한 뒤 체크포인트 공개 직후 상태를 만든다. LoRA 대기, 자동 WorkManager 예약, 변환 중 취소와 공용 LoRA 삭제, 재준비, 홈 화면에서 변환 완료, CLI 출력 해시 비교를 검증한다. 기기 화면을 잠금 해제한 상태에서 실행한다.
 
 ```powershell
 .\gradlew.bat -PconverterBenchmark=RelWithDebInfo :app:assembleDebug :app:assembleDebugAndroidTest
@@ -50,7 +61,15 @@ $pkg = 'com.example.pocketmuseprototype.converterbenchmark'
 $remote = "/sdcard/Android/data/$pkg/files/models/90301_90302/source"
 adb shell mkdir -p "$remote"
 adb push 'C:\path\to\v1-5-pruned-emaonly.safetensors' "$remote/checkpoint.safetensors"
+adb shell mkdir -p "/sdcard/Android/data/$pkg/files/converter-smoke"
+adb push 'C:\path\to\lcm-lora-sdv1-5.safetensors' "/sdcard/Android/data/$pkg/files/converter-smoke/lcm-lora.safetensors"
 adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.BackgroundConversionAndroidTest#realCheckpointCancelsThenCompletesInBackground' -e realBackgroundConversion true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 ```
 
-완료 후 격리 앱의 Library에서 결과를 확인하고 **Conversion fixture**를 삭제한다. 한 번의 시험에는 원본과 출력에 약 5.6 GB가 필요하다.
+공식 LoRA를 준비한 상태에서 JNI 오류 후에도 공용 파일을 다시 사용할 수 있는지 확인한다.
+
+```powershell
+adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.BackgroundConversionAndroidTest#staticNativeFailureReleasesTheOfficialLora' -e verifiedStaticFixture true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
+완료 후 격리 앱을 다시 열어 Library의 **정적 LCM 변환 완료** 상태를 확인하고 **Conversion fixture**를 삭제한다. 다시 시험하기 전에 격리 앱의 공용 LoRA도 삭제한다. 원본, 출력과 LoRA 사본에 약 5.9 GB가 필요하다.

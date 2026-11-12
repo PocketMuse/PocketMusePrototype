@@ -27,6 +27,8 @@ import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.auth.CivitaiOAuth
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.download.EnqueueResult
+import com.example.pocketmuseprototype.download.SharedLcmCancellation
+import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
 import kotlinx.coroutines.launch
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val authState by auth.state.collectAsStateWithLifecycle()
             val library by app.downloads.models.collectAsStateWithLifecycle(emptyList())
+            val sharedLcm by app.sharedLcm.state.collectAsStateWithLifecycle(SharedLcmState.Missing)
             val snackbar = remember { SnackbarHostState() }
             PocketMusePrototypeTheme(darkTheme = true, dynamicColor = false) {
                 PocketMuseApp(
@@ -76,9 +79,29 @@ class MainActivity : ComponentActivity() {
                     onRetryAuth = auth::retrySession,
                     onDisconnect = auth::disconnect,
                     library = library,
+                    sharedLcm = sharedLcm,
+                    onRetryLcm = ::ensureSharedLcm,
+                    onCancelLcm = {
+                        app.appScope.launch {
+                            if (app.sharedLcm.cancel() == SharedLcmCancellation.Failed) lifecycleScope.launch {
+                                snackbar.showSnackbar(getString(R.string.library_lcm_cancel_error))
+                            }
+                        }
+                    },
+                    onDeleteLcm = {
+                        app.appScope.launch {
+                            if (!app.sharedLcm.delete()) lifecycleScope.launch {
+                                snackbar.showSnackbar(getString(R.string.library_lcm_delete_error))
+                            }
+                        }
+                    },
                     onDownloadRequest = { enqueue(it, snackbar) },
                     onRemoveModel = { model -> app.appScope.launch { app.downloads.remove(model) } },
-                    onStartConversion = { model -> app.appScope.launch { app.downloads.startConversion(model) } },
+                    onStartConversion = { model ->
+                        app.appScope.launch {
+                            if (app.downloads.startConversion(model)) ensureSharedLcm()
+                        }
+                    },
                     onCancelConversion = { model -> app.appScope.launch { app.downloads.cancelConversion(model) } },
                     snackbar = snackbar,
                     libraryRequest = libraryRequest
@@ -91,6 +114,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         auth.onForeground()
         app.appScope.launch { app.downloads.reconcile() }
+        app.appScope.launch { app.sharedLcm.reconcile() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -134,6 +158,7 @@ class MainActivity : ComponentActivity() {
 
     private fun enqueue(checkpoint: CatalogCheckpoint, snackbar: SnackbarHostState) {
         if (auth.state.value !is AuthState.Connected) return
+        ensureSharedLcm()
         lifecycleScope.launch {
             val result = app.downloads.enqueue(checkpoint)
             if (result == EnqueueResult.Queued) requestNotifications()
@@ -143,6 +168,12 @@ class MainActivity : ComponentActivity() {
                 EnqueueResult.StorageUnavailable -> R.string.library_error_storage
                 EnqueueResult.SchedulingFailed -> R.string.library_error_schedule
             }))
+        }
+    }
+
+    private fun ensureSharedLcm() {
+        app.appScope.launch {
+            if (app.sharedLcm.ensure()) lifecycleScope.launch { requestNotifications() }
         }
     }
 

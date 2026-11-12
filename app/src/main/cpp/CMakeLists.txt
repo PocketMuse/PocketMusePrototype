@@ -19,9 +19,16 @@ FetchContent_Declare(nlohmann_json
     URL https://codeload.github.com/nlohmann/json/tar.gz/refs/tags/v3.12.0
     URL_HASH SHA512=6cc1e86261f8fac21cc17a33da3b6b3c3cd5c116755651642af3c9e99bb3538fd42c1bd50397a77c8fb6821bc62d90e6b91bcdde77a78f58f2416c62fc53b97d
 )
-FetchContent_MakeAvailable(nlohmann_json)
+FetchContent_Declare(picosha2
+    URL https://codeload.github.com/okdshin/PicoSHA2/tar.gz/refs/tags/v1.0.1
+    URL_HASH SHA512=e6315f9f3a00197dcdd1cf459d956048e5c15f40d158537a061181d43e02ee46b979b650a05e748f61b85149f32f77625dacb869402dc243bdca71c5d2a0cc6d
+    # Populate the header without configuring the upstream example and test targets.
+    SOURCE_SUBDIR cmake
+)
+FetchContent_MakeAvailable(nlohmann_json picosha2)
 # The Converter's find_package can use the config generated in the JSON build tree.
 set(nlohmann_json_DIR "${nlohmann_json_BINARY_DIR}")
+set(PICOSHA2_INCLUDE_DIR "${picosha2_SOURCE_DIR}")
 add_subdirectory("${TO_MNN_CONVERTER}" sd15_converter)
 
 add_library(pocketmuse_converter SHARED converter_jni.cpp)

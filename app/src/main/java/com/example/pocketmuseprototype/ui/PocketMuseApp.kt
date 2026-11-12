@@ -59,6 +59,7 @@ import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.catalog.MarketViewModel
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
+import com.example.pocketmuseprototype.download.SharedLcmState
 import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
@@ -77,6 +78,10 @@ internal fun PocketMuseApp(
     onDisconnect: () -> Unit,
     marketViewModel: MarketViewModel = viewModel(factory = MarketViewModel.Factory),
     library: List<LibraryItem> = emptyList(),
+    sharedLcm: SharedLcmState = SharedLcmState.Missing,
+    onRetryLcm: () -> Unit = {},
+    onCancelLcm: () -> Unit = {},
+    onDeleteLcm: () -> Unit = {},
     onDownloadRequest: ((CatalogCheckpoint) -> Unit)? = null,
     onRemoveModel: (LibraryModel) -> Unit = {},
     onStartConversion: (LibraryModel) -> Unit = {},
@@ -150,7 +155,8 @@ internal fun PocketMuseApp(
                         AppTab.Library -> tabStateHolder.SaveableStateProvider(AppTab.Library.name) {
                             LibraryScreen(
                                 library, onRemoveModel, onStartConversion, onCancelConversion,
-                                Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
+                                Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth(),
+                                sharedLcm, onRetryLcm, onCancelLcm, onDeleteLcm
                             )
                         }
                     }

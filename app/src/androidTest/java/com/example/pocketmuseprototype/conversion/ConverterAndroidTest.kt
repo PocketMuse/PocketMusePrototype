@@ -55,6 +55,41 @@ class ConverterAndroidTest {
     }
 
     @Test
+    fun lcmLoraPathReachesNativeValidationAndPreservesFiles() = withFixture { fixture ->
+        val checkpoint = fixture.options.checkpoint.readBytes()
+        val lora = fixture.options.templateDir.resolve("어댑터-📦.safetensors")
+        val options = fixture.options.copy(lcmLora = lora)
+        val stages = mutableListOf<ConversionStage>()
+
+        val missing = ConversionRequest(options).run { stages += it.stage }
+        assertEquals(ConversionStatus.Failed, missing.status)
+        assertEquals(ConversionErrorCode.READ_FAILED, missing.errorCode)
+        assertTrue(missing.files.isEmpty())
+        assertEquals(listOf(ConversionStage.Validating), stages)
+        assertFalse(fixture.partial.exists())
+        assertFalse(fixture.options.outputDir.exists())
+
+        val invalidBytes = "not the official adapter".encodeToByteArray()
+        lora.writeBytes(invalidBytes)
+        val invalid = ConversionRequest(options).run()
+        assertEquals(ConversionStatus.Failed, invalid.status)
+        assertEquals(ConversionErrorCode.INVALID_INPUT, invalid.errorCode)
+        assertTrue(invalid.files.isEmpty())
+        assertFalse(fixture.partial.exists())
+        assertFalse(fixture.options.outputDir.exists())
+        assertArrayEquals(checkpoint, options.checkpoint.readBytes())
+        assertArrayEquals(invalidBytes, lora.readBytes())
+
+        assertEquals(ConversionStatus.Succeeded, ConversionRequest(fixture.options).run().status)
+        val existing = ConversionRequest(options).run()
+        assertEquals(ConversionStatus.Failed, existing.status)
+        assertEquals(ConversionErrorCode.OUTPUT_EXISTS, existing.errorCode)
+        assertTrue(existing.files.isEmpty())
+        assertArrayEquals(expectedOutput, fixture.outputFile.readBytes())
+        assertFalse(fixture.partial.exists())
+    }
+
+    @Test
     fun cancellationFromAnotherThreadCleansStagingBeforeReturning() = withFixture { fixture ->
         val request = ConversionRequest(fixture.options)
         val caller = Executors.newSingleThreadExecutor()

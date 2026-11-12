@@ -5,7 +5,12 @@ import androidx.annotation.WorkerThread
 import java.io.File
 import java.nio.charset.CharacterCodingException
 
-/** Inputs use absolute filesystem paths. The template contains graph.bin and manifest.json. */
+/**
+ * Inputs use absolute filesystem paths. The template contains graph.bin and manifest.json.
+ *
+ * @property lcmLora The official SD1.5 LCM-LoRA safetensors file to merge into a compatible
+ * HQQ B128 template. The Converter validates the file. Null selects standard conversion.
+ */
 data class ConversionOptions(
     val checkpoint: File,
     val templateDir: File,
@@ -13,6 +18,7 @@ data class ConversionOptions(
     val chunkBytes: Int = 1024 * 1024,
     val hqqIterations: Int = 20,
     val threadCount: Int = 1,
+    val lcmLora: File? = null,
 )
 
 enum class ConversionStatus { Succeeded, Cancelled, Failed }
@@ -81,6 +87,9 @@ class ConversionRequest(private val options: ConversionOptions) {
         val checkpoint = options.checkpoint.toNativePath() ?: return failed(ConversionErrorCode.INVALID_INPUT)
         val templateDir = options.templateDir.toNativePath() ?: return failed(ConversionErrorCode.INVALID_INPUT)
         val outputDir = options.outputDir.toNativePath() ?: return failed(ConversionErrorCode.INVALID_INPUT)
+        val lcmLora = options.lcmLora?.let {
+            it.toNativePath() ?: return failed(ConversionErrorCode.INVALID_INPUT)
+        }
         val handle = NativeConverter.createToken()
         if (handle == 0L) return failed(ConversionErrorCode.OUT_OF_MEMORY)
         try {
@@ -89,7 +98,7 @@ class ConversionRequest(private val options: ConversionOptions) {
                 if (cancellationRequested) NativeConverter.requestCancel(handle)
             }
             return NativeConverter.convert(
-                handle, checkpoint, templateDir, outputDir, options.chunkBytes,
+                handle, checkpoint, templateDir, outputDir, lcmLora, options.chunkBytes,
                 options.hqqIterations, options.threadCount, onProgress != null, NativeCallbacks(onProgress),
             )
         } finally {
@@ -138,6 +147,7 @@ private object NativeConverter {
         checkpoint: ByteArray,
         templateDir: ByteArray,
         outputDir: ByteArray,
+        lcmLora: ByteArray?,
         chunkBytes: Int,
         hqqIterations: Int,
         threadCount: Int,

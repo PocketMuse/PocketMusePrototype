@@ -96,7 +96,7 @@ Java_com_example_pocketmuseprototype_conversion_NativeConverter_destroyToken(JNI
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_pocketmuseprototype_conversion_NativeConverter_convert(
     JNIEnv* env, jobject, jlong token, jbyteArray checkpoint, jbyteArray template_dir,
-    jbyteArray output_dir, jint chunk_bytes, jint hqq_iterations, jint thread_count,
+    jbyteArray output_dir, jbyteArray lcm_lora, jint chunk_bytes, jint hqq_iterations, jint thread_count,
     jboolean observe_progress, jobject callbacks) {
     const auto callback_class = env->GetObjectClass(callbacks);
     if (callback_class == nullptr) return nullptr;
@@ -114,6 +114,10 @@ Java_com_example_pocketmuseprototype_conversion_NativeConverter_convert(
         if (env->ExceptionCheck()) return nullptr;
         options.output_dir = read_path(env, output_dir);
         if (env->ExceptionCheck()) return nullptr;
+        if (lcm_lora != nullptr) {
+            options.lcm_lora_path = read_path(env, lcm_lora);
+            if (env->ExceptionCheck()) return nullptr;
+        }
         options.chunk_bytes = static_cast<std::size_t>(chunk_bytes);
         options.hqq_iterations = hqq_iterations;
         options.thread_count = static_cast<unsigned>(thread_count);
