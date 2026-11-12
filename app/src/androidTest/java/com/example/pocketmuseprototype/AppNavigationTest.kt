@@ -10,11 +10,13 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
@@ -73,23 +75,42 @@ class AppNavigationTest {
         compose.onAllNodesWithContentDescription(string(R.string.market_download))[0].performClick()
         market.assertIsSelected()
         library.performClick()
-        compose.onNodeWithText(string(R.string.library_queued)).assertIsDisplayed()
+        val cancelDownload = string(R.string.library_cancel_download, row.modelName)
+        compose.onNode(hasContentDescription(cancelDownload) and SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
+        )).assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("대기 중").assertDoesNotExist()
         val downloading = row.copy(downloadStatus = DownloadStatus.Downloading,
             downloadedBytes = 25_000_000L, totalBytes = 100_000_000L)
         compose.runOnIdle { entries.value = listOf(LibraryItem(downloading, null)) }
-        compose.onNode(SemanticsMatcher.expectValue(
+        compose.onNode(hasContentDescription(cancelDownload) and SemanticsMatcher.expectValue(
             SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.25f, 0f..1f)
-        )).assertIsDisplayed()
+        )).assertIsDisplayed().assertIsEnabled()
         market.performClick()
         library.performClick()
-        compose.onNodeWithText(string(R.string.library_downloading)).assertIsDisplayed()
-        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        compose.onNodeWithText("다운로드 중").assertDoesNotExist()
+        compose.runOnIdle { entries.value = listOf(LibraryItem(downloading.copy(totalBytes = null), null)) }
+        compose.onNode(hasContentDescription(cancelDownload) and SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
+        )).performClick()
+        compose.runOnIdle { check(removed.isEmpty()) }
+        compose.onNodeWithText(string(R.string.library_dismiss_confirmation)).performClick()
+        compose.runOnIdle { check(removed.isEmpty()) }
+        compose.onNodeWithContentDescription(cancelDownload).performClick()
+        compose.onNodeWithText(string(R.string.library_cancel_download_question)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_confirm_cancel_download)).performClick()
         compose.onNodeWithText(string(R.string.library_downloads_empty)).assertIsDisplayed()
 
         val completed = row.copy(downloadStatus = DownloadStatus.Downloaded)
         compose.runOnIdle { entries.value = listOf(LibraryItem(completed, null)) }
-        compose.onNodeWithText(string(R.string.library_downloaded), substring = true).assertIsDisplayed()
+        val size = Formatter.formatShortFileSize(compose.activity, completed.fileSize)
+        compose.onNodeWithText(size, substring = true).assertIsDisplayed()
+        compose.onNodeWithText("다운로드 완료", substring = true).assertDoesNotExist()
         compose.onNodeWithText(string(R.string.library_delete)).performClick()
+        compose.runOnIdle { check(removed == listOf(DownloadStatus.Downloading)) }
+        compose.onNodeWithText(string(R.string.library_dismiss_confirmation)).performClick()
+        compose.onNodeWithText(string(R.string.library_delete)).performClick()
+        compose.onNodeWithText(string(R.string.library_confirm_delete)).performClick()
         compose.onNodeWithText(string(R.string.library_models_empty)).assertIsDisplayed()
         compose.runOnIdle { check(removed == listOf(DownloadStatus.Downloading, DownloadStatus.Downloaded)) }
     }
@@ -103,7 +124,7 @@ class AppNavigationTest {
             library = { listOf(LibraryItem(model.value, null)) },
             onConvert = {
                 model.value = if (it.conversionStatus == ModelConversionStatus.NotStarted) {
-                    it.copy(conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
+                    it.copy(conversionStatus = ModelConversionStatus.Queued)
                 } else it.copy(conversionStatus = ModelConversionStatus.Converted, conversionProgress = 100,
                     conversionRecipeId = STATIC_LCM_RECIPE)
             },
@@ -114,10 +135,23 @@ class AppNavigationTest {
 
         compose.onNodeWithText("Library").performClick()
         compose.onNodeWithText(string(R.string.library_convert)).performClick()
-        compose.onNode(SemanticsMatcher.expectValue(
+        compose.onNodeWithText(string(R.string.library_delete)).assertIsEnabled()
+        val cancelConversion = string(R.string.library_cancel_conversion, downloaded.modelName)
+        compose.onNode(hasContentDescription(cancelConversion) and SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
+        )).assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("변환 대기 중").assertDoesNotExist()
+        compose.runOnIdle {
+            model.value = model.value.copy(conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
+        }
+        compose.onNode(hasContentDescription(cancelConversion) and SemanticsMatcher.expectValue(
             SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.37f, 0f..1f)
-        )).assertIsDisplayed()
-        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        )).performClick()
+        compose.runOnIdle { check(model.value.conversionStatus == ModelConversionStatus.Converting) }
+        compose.onNodeWithText(string(R.string.library_dismiss_confirmation)).performClick()
+        compose.onNodeWithContentDescription(cancelConversion).performClick()
+        compose.onNodeWithText(string(R.string.library_cancel_conversion_question)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).performClick()
         compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_convert_retry)).performClick()
         compose.onNodeWithText(string(R.string.library_converted)).assertIsDisplayed()
@@ -143,7 +177,8 @@ class AppNavigationTest {
         compose.onNodeWithText(string(R.string.library_convert_static_lcm)).performClick()
         compose.onNodeWithText(string(R.string.library_conversion_waiting_lcm)).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_lcm_download)).assertIsEnabled()
-        compose.onNodeWithText(string(R.string.library_cancel)).performClick()
+        compose.onNodeWithContentDescription(string(R.string.library_cancel_conversion, legacy.modelName)).performClick()
+        compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).performClick()
         compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
     }
 
@@ -344,7 +379,7 @@ class AppNavigationTest {
         }
     }
 
-    private fun string(id: Int): String = compose.activity.getString(id)
+    private fun string(id: Int, vararg args: Any): String = compose.activity.getString(id, *args)
 
     private fun page(ids: IntRange, nextCursor: String? = null): ModelsResponse {
         val models = ids.map { index ->

@@ -72,4 +72,4 @@ adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.
 adb shell am instrument -w -e class 'com.example.pocketmuseprototype.conversion.BackgroundConversionAndroidTest#staticNativeFailureReleasesTheOfficialLora' -e verifiedStaticFixture true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 ```
 
-완료 후 격리 앱을 다시 열어 Library의 **정적 LCM 변환 완료** 상태를 확인하고 **Conversion fixture**를 삭제한다. 다시 시험하기 전에 격리 앱의 공용 LoRA도 삭제한다. 원본, 출력과 LoRA 사본에 약 5.9 GB가 필요하다.
+완료 후 격리 앱을 다시 열어 Library에서 **Conversion fixture**가 **내 모델**에 **정적 LCM**으로 표시되는지 확인한 뒤 삭제한다. 다시 시험하기 전에 격리 앱의 공용 LoRA도 삭제한다. 원본, 출력과 LoRA 사본에 약 5.9 GB가 필요하다.

@@ -18,14 +18,14 @@ Market → Image에서 Civitai 연결 후 체크포인트를 선택한다. 버�
 
 ## 공용 SD1.5 LCM LoRA
 
-Market의 다운로드 요청은 Civitai 체크포인트 예약과 공용 LoRA 준비를 각각 시작한다. Library의 모델 작업 섹션에는 공용 작업의 대기·전송·검증·실패와 취소 또는 재시도를 표시한다. 검증된 파일은 **내 모델**에서 `LR` 마크와 **사용 가능** 상태, 크기, 삭제 버튼으로 표시한다.
+Market의 다운로드 요청은 Civitai 체크포인트 예약과 공용 LoRA 준비를 각각 시작한다. Library의 모델 작업 섹션에는 공용 작업의 대기·전송·검증·실패와 취소 또는 재시도를 표시한다. 검증된 파일은 **내 모델**에서 `LR` 마크와 출처, 크기, 삭제 버튼으로 표시한다.
 
 - 고정 출처는 Hugging Face의 `latent-consistency/lcm-lora-sdv1-5`이며 라이선스는 `openrail++`이다. 배포 revision은 `cf2fced511dbe7e26c8d1d397e728fbab875db4b`다. `pytorch_lora_weights.safetensors`의 길이 `134621556`바이트와 SHA-256 `8f90d840e075ff588a58e22c6586e2ae9a6f7922996ee6649a7f01072333afe4`를 검사한다. [모델 파일](https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/blob/cf2fced511dbe7e26c8d1d397e728fbab875db4b/pytorch_lora_weights.safetensors), [Git LFS 포인터](https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/raw/cf2fced511dbe7e26c8d1d397e728fbab875db4b/pytorch_lora_weights.safetensors)
 - 별도 WorkManager 고유 작업 `shared-sd15-lcm-lora-v1`에 `KEEP`과 `CONNECTED` 제약을 적용한다. 기존 다운로드의 `dataSync` 서비스와 알림 채널을 공유한다. 전송에는 HTTPS 리다이렉트와 인증 정보 없는 요청을 사용한다. 일시적 네트워크 오류에는 WorkManager 백오프로 최대 두 번 재시도한다. 중단된 파일은 다음 시도에서 처음부터 받는다. 재실행 시점은 OS 정책과 네트워크 제약을 따른다. [WorkManager 고유 작업](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work)
 - 내부 앱 전용 `Context.noBackupFilesDir/shared-assets/sd15-lcm-lora-v1/`에 저장한다. 같은 디렉터리의 `.part`에 스트리밍한 뒤 길이와 전체 해시를 확인하고 원자적으로 최종 이름을 공개한다. 프로세스를 다시 시작하거나 파일의 식별 정보가 바뀌면 SHA-256을 다시 확인한다. 프로세스 안에서는 동일 파일의 검증 결과를 재사용한다. 취소는 공용 작업 ID에만 적용하며 Worker가 스트림과 파일을 닫은 뒤 임시 파일을 정리한다.
 - 작업 상태와 진행률은 WorkManager에서 읽는다. 원자적으로 갱신하는 작은 `last-result` 파일은 WorkManager가 완료 기록을 정리한 뒤에도 실패 이유와 사용자 삭제를 복구한다. 최종 파일의 검증 결과가 사용 가능 여부를 결정한다. 성공한 작업의 파일이 사라지거나 손상되면 Library에서 재시도할 수 있다. [WorkManager 완료 기록 정리](https://developer.android.com/reference/kotlin/androidx/work/WorkManager#pruneWork())
 - WorkManager 2.11.2에서 이 단일 요청을 `KEEP`으로 다시 예약하면 이전 완료 행을 제거하고 새 ID를 삽입한다. 조회 목록은 시간순 정렬을 보장하지 않는다. 활성 작업을 우선하고, 완료 행이 하나일 때 그 ID와 결과를 사용한다. 완료 행이 여러 개이거나 정리된 경우에는 검증된 파일과 `last-result`를 사용한다. [KEEP 계약](https://developer.android.com/reference/androidx/work/ExistingWorkPolicy#KEEP), [WorkManager 조회 소스](https://android.googlesource.com/platform/frameworks/support/+/db73e0b8cd586cfeb723a3d99f75e04e14db41d5/work/work-runtime/src/main/java/androidx/work/impl/model/WorkSpecDao.kt)
-- 취소 기록과 최종 파일의 원자적 공개는 같은 파일 잠금에서 순서를 정한다. 작업 ID의 취소 기록이 먼저 저장되면 Worker는 공개를 건너뛴다. 공개가 먼저 끝났으면 **사용 가능**을 유지한다. 취소 기록만 남기고 프로세스가 종료된 경우에는 재실행 시 WorkManager 취소와 임시 파일 정리를 마친다. 재시도는 이전 Worker의 파일 정리가 끝난 뒤 새 ID를 사용한다.
+- 취소 기록과 최종 파일의 원자적 공개는 같은 파일 잠금에서 순서를 정한다. 작업 ID의 취소 기록이 먼저 저장되면 Worker는 공개를 건너뛴다. 공개가 먼저 끝났으면 검증된 파일은 **내 모델**에 남는다. 취소 기록만 남기고 프로세스가 종료된 경우에는 재실행 시 WorkManager 취소와 임시 파일 정리를 마친다. 재시도는 이전 Worker의 파일 정리가 끝난 뒤 새 ID를 사용한다.
 - 변환은 `PocketMuseApplication.sharedLcm.withVerifiedFile { file -> … }`로 검증된 절대 경로를 얻는다. 콜백은 I/O 디스패처에서 실행된다. 누락·손상 시 `null`을 반환하며 저장소 I/O와 콜백의 예외는 호출자에게 전파한다. 네이티브 호출과 취소 후 자원 해제까지 콜백 안에서 끝낸다. 파일 삭제와 교체는 콜백 종료를 기다린다. 공용 다운로드 실패·취소 또는 사용 전 삭제 이후에도 모델은 원본을 유지하고 LoRA를 기다린다. Library에서 LoRA를 다시 준비할 수 있다.
 
 ## 검증
