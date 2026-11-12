@@ -17,8 +17,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ConverterSmokeTest {
     @Test
-    fun convertsPreparedHqqModel() {
-        assumeTrue(InstrumentationRegistry.getArguments().getString("converterSmoke") == "true")
+    fun convertsPreparedHqqModel() = convertPreparedModel("converterSmoke")
+
+    @Test
+    fun convertsPreparedStaticLcmModel() = convertPreparedModel("converterLcmSmoke", "lcm-lora.safetensors")
+
+    private fun convertPreparedModel(argument: String, loraName: String? = null) {
+        assumeTrue(InstrumentationRegistry.getArguments().getString(argument) == "true")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val inputs = checkNotNull(context.getExternalFilesDir(null)).resolve("converter-smoke")
         val template = inputs.resolve("template")
@@ -32,12 +37,15 @@ class ConverterSmokeTest {
         try {
             var lastStage: ConversionStage? = null
             val result = ConversionRequest(
-                ConversionOptions(inputs.resolve("model.safetensors"), template, output, threadCount = 4),
+                ConversionOptions(
+                    inputs.resolve("model.safetensors"), template, output,
+                    threadCount = 4, lcmLora = loraName?.let(inputs::resolve),
+                ),
             ).run { lastStage = it.stage }
             val otherMillis = result.elapsedMillis - result.hqqComputeMillis
             Log.i(
                 TAG,
-                "status=${result.status} error=${result.errorCode} elapsedMs=${result.elapsedMillis} " +
+                "$argument status=${result.status} error=${result.errorCode} elapsedMs=${result.elapsedMillis} " +
                     "hqqMs=${result.hqqComputeMillis} otherMs=$otherMillis " +
                     "files=${result.files.joinToString { "${it.name}:${it.sizeBytes}" }}",
             )
@@ -51,7 +59,7 @@ class ConverterSmokeTest {
             expectedFiles.forEach { assertEquals(it.sizeBytes, File(output, it.name).length()) }
             assertFalse(workingDir.resolve("output.partial").exists())
             assertTrue(result.hqqComputeMillis > 0)
-            val reference = inputs.resolve("reference-sha256.txt")
+            val reference = inputs.resolve(if (loraName == null) "reference-sha256.txt" else "reference-lcm-sha256.txt")
             if (reference.isFile) {
                 val expectedHashes = reference.readLines().associate { line ->
                     val (hash, name) = line.trim().split(Regex("\\s+"), limit = 2)

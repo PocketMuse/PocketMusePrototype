@@ -4,13 +4,13 @@ Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받�
 
 ## 빌드와 테스트
 
-JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 체크섬이 고정된 nlohmann/json 소스를 가져온다.
+JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 SHA-512가 고정된 nlohmann/json 3.12.0과 PicoSHA2 1.0.1 소스를 가져온다.
 
 Windows 프로젝트 루트에서 실행한다.
 
 ```powershell
 git submodule update --init third_party/to-mnn
-.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+.\gradlew.bat :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:lintDebug
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
@@ -36,6 +36,15 @@ adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversio
 ```
 
 `$checkpoint`와 `$template`은 실제 로컬 경로로 바꾼다. 출력은 기기에 수 GiB의 여유 공간이 필요하다. 테스트는 결과와 출력 파일 목록·크기를 확인한 뒤 이번 실행의 출력 디렉터리를 정리한다. 입력은 다음 실행에 재사용할 수 있다.
+
+정적 LCM 변환 스모크는 같은 체크포인트와 호환 템플릿에 로컬의 공식 SD 1.5 LCM-LoRA 파일을 추가해 실행한다. 동일 입력으로 생성한 CLI 기준 해시가 있으면 `sha256sum *.mnn` 형식의 `reference-lcm-sha256.txt`를 입력 디렉터리에 두어 출력 파일 세 개의 SHA-256도 비교할 수 있다.
+
+```powershell
+adb push 'C:\path\to\lcm-lora-sdv1-5.safetensors' "$remote/lcm-lora.safetensors"
+adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversion.ConverterSmokeTest -e converterLcmSmoke true com.example.pocketmuseprototype.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+기존 앱 설치를 유지하며 두 스모크를 실행하려면 [격리 패키지 빌드와 실행 방법](docs/Converter.md#네이티브-빌드-성능-재현)을 따른다.
 
 ## 실제 백그라운드 변환 스모크
 

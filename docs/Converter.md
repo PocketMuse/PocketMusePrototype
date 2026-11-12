@@ -27,15 +27,17 @@
 
 ## 호출 계약
 
-- `ConversionOptions`에 앱이 읽을 수 있는 체크포인트와 템플릿의 절대 파일 경로를 전달한다. `templateDir`에는 짝이 맞는 `graph.bin`과 `manifest.json`이 있어야 한다. 앱이 쓸 수 있는 출력 부모 디렉터리를 먼저 만든다. 기본값은 청크 1 MiB, HQQ 보정 20회, 계산 스레드 1개다. 유효 범위와 호환성 검사는 to-mnn을 따른다. [to-mnn 공개 API](https://github.com/PocketMuse/to-mnn/blob/b5a06df6944cd8b6ff22048396281d04e926c7fe/docs/cpp/public-api.md#converter-contracts)
+- `ConversionOptions`에 앱이 읽을 수 있는 체크포인트와 템플릿의 절대 파일 경로를 전달한다. `templateDir`에는 짝이 맞는 `graph.bin`과 `manifest.json`이 있어야 한다. 앱이 쓸 수 있는 출력 부모 디렉터리를 먼저 만든다. 기본값은 청크 1 MiB, HQQ 보정 20회, 계산 스레드 1개다. 유효 범위와 호환성 검사는 to-mnn을 따른다. [to-mnn 공개 API](https://github.com/PocketMuse/to-mnn/blob/a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e/docs/cpp/public-api.md#converter-contracts)
+- `lcmLora: File? = null`은 선택적인 입력이다. 생략하면 일반 HQQ 변환을 수행하며 기존 `ConversionWorker`는 이 경로를 사용한다. 정적 LCM 변환을 요청할 때는 앱이 읽을 수 있는 공식 SD 1.5 LCM-LoRA safetensors를 최종 경로에 준비해 `lcmLora`에 절대 경로로 전달하고 `run()`이 반환할 때까지 파일을 유지한다. Converter가 크기·SHA-256·safetensors 구조와 체크포인트·HQQ B128 템플릿의 호환성을 확인한 뒤 강도 1.0으로 병합한다. 파일을 열 수 없으면 `READ_FAILED`, 공식 파일의 크기나 해시와 다르면 `INVALID_INPUT`을 반환한다. 성공한 출력에는 병합된 UNet과 CLIP·VAE가 포함된다. [정적 병합 계약](https://github.com/PocketMuse/to-mnn/blob/a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e/docs/cpp/converter.md)
 - `ConversionRequest(options).run(onProgress)`는 호출 스레드에서 동기 실행된다. 파일 I/O를 허용하는 작업 스레드에서 호출한다. 콜백은 같은 스레드에서 실행되며 단계, 컴포넌트, 바이트 진행률 및 시간 정보를 받는다. 공개 전 콜백 예외는 `CALLBACK_FAILED`로 전달되고 정리에 실패하면 `CLEANUP_FAILED`가 우선한다. `Completed`는 출력 공개 후에 전달되며 그 시점의 취소나 콜백 예외 이후에도 성공이 유지된다.
 - 각 요청은 한 번 실행할 수 있다. `requestCancel()`은 실행 전이나 다른 스레드에서도 호출할 수 있다. `run()`이 `Cancelled`를 반환하면 취소 처리와 정리가 끝난 상태다. 입력과 출력 경로의 소유권은 반환까지 호출자가 유지한다. 변환과 정리는 프로세스 내에서 한 번에 하나만 실행한다. 다른 호출과 경합하거나 진행 콜백에서 새 요청을 실행하거나 정리를 호출하면 `BUSY`를 반환한다.
 - `ConversionResult`는 상태, 오류 코드, 공개된 파일의 상대 이름과 크기, 소요 시간과 HQQ 계측값을 제공한다. 오류 코드는 to-mnn의 공개 식별자와 일치한다. 네이티브 진단 메시지·경로·텐서명은 Kotlin 결과에 포함하지 않는다. JVM 할당 실패나 JNI 연결 오류는 예외로 전달될 수 있다. `Succeeded`를 반환한 출력만 사용한다.
-- 중단 후 잔여 출력 정리가 필요하면 해당 경로의 배타적 소유권을 확보하고 `ConversionRequest.cleanupPartial(outputDir)`를 호출한다. Converter가 소유 표식과 파일을 검사한다. 기존 최종 출력은 덮어쓰지 않으며, 소유를 확인할 수 없는 `.partial`은 보존한다. [출력 및 정리 계약](https://github.com/PocketMuse/to-mnn/blob/b5a06df6944cd8b6ff22048396281d04e926c7fe/docs/cpp/public-api.md#결과와-잔여-출력-정리)
+- 중단 후 잔여 출력 정리가 필요하면 해당 경로의 배타적 소유권을 확보하고 `ConversionRequest.cleanupPartial(outputDir)`를 호출한다. Converter가 소유 표식과 파일을 검사한다. 기존 최종 출력은 덮어쓰지 않으며, 소유를 확인할 수 없는 `.partial`은 보존한다. [출력 및 정리 계약](https://github.com/PocketMuse/to-mnn/blob/a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e/docs/cpp/public-api.md#결과와-잔여-출력-정리)
 
 ## Checkpoints
 
 - AGP의 NDK 도구 체인에서 to-mnn의 `cpp/converter` CMake 하위 디렉터리만 추가한다. to-mnn의 vcpkg 기준과 같은 nlohmann/json 3.12.0 소스를 해시로 고정하고, 생성된 CMake 패키지 설정을 `sd15_converter`의 `find_package()`에 연결한다. 별도 vcpkg Android 빌드나 사전 빌드한 `.a`를 가져오는 방식은 도구 체인과 ABI를 따로 맞춰야 한다. 소스 통합으로 Converter와 JNI가 앱이 고정한 NDK, API 29, C++17 및 `c++_shared`를 공유한다. [Android NDK CMake](https://developer.android.com/ndk/guides/cmake), [nlohmann/json CMake 통합](https://nlohmann.github.io/json/integration/cmake/)
+- to-mnn `a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e`의 정적 LCM 변환은 공식 어댑터 134,621,556바이트와 SHA-256 `8f90d840e075ff588a58e22c6586e2ae9a6f7922996ee6649a7f01072333afe4`를 요구한다. CMake는 to-mnn의 vcpkg 기준과 같은 PicoSHA2 1.0.1 아카이브를 SHA-512로 확인하고 헤더 경로만 `PICOSHA2_INCLUDE_DIR`로 전달한다. [어댑터 검증 소스](https://github.com/PocketMuse/to-mnn/blob/a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e/cpp/converter/src/conversion/converter.cpp#L35), [PicoSHA2 vcpkg 포트](https://github.com/microsoft/vcpkg/tree/e456309491fd875487bf02b8a0dca76c1b1b00cc/ports/picosha2)
 - Kotlin은 파일 경로를 표준 UTF-8 바이트로 넘긴다. 동기 JNI 호출이 진행 콜백의 참조를 유지하고, 요청이 취소 토큰 접근과 해제를 동기화한다. [Android JNI 문자열과 참조](https://developer.android.com/ndk/guides/jni-tips#utf-8_and_utf-16_strings)
 
 ## WorkManager 연동
@@ -67,6 +69,8 @@ adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.
 adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversion.ConverterSmokeTest -e converterSmoke true com.example.pocketmuseprototype.converterbenchmark.test/androidx.test.runner.AndroidJUnitRunner
 adb logcat -d -s ConverterSmokeTest:I
 ```
+
+격리 APK에서 정적 LCM을 실행하려면 같은 입력 디렉터리에 `lcm-lora.safetensors`와 선택적인 `reference-lcm-sha256.txt`를 두고 위 실행 인수를 `-e converterLcmSmoke true`로 바꾼다.
 
 `hqq.cpp`와 `converter_jni.cpp`를 빌드한 실제 컴파일 명령을 비교했다. 앱은 NDK `27.1.12297006`, `aarch64-none-linux-android29`, `-std=c++17`, `c++_shared`를 사용했다. 기존 CLI의 Ninja 명령은 같은 NDK에서 `aarch64-none-linux-android28`, 컴파일러 기본 C++17, `c++_shared`를 사용했다. Converter의 `-ffp-contract=off`는 모든 구성에 있었다. [CMake 빌드 타입](https://cmake.org/cmake/help/v3.22/variable/CMAKE_BUILD_TYPE.html), [컴파일 명령 내보내기](https://cmake.org/cmake/help/v3.22/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html)
 
@@ -108,3 +112,11 @@ adb logcat -d -s ConverterSmokeTest:I
 일반 Debug·Release APK 빌드와 JVM 테스트 36개가 통과했고 lint는 오류 0개, 경고 34개였다. 격리 `RelWithDebInfo` APK에서 인증·탐색·Library 및 합성 Converter 계측 21개가 통과했다. 기본 패키지명을 고정 비교하는 템플릿 테스트는 격리 실행에서 제외하고 기본 APK의 패키지명을 확인했다. 실험용 패키지만 제거했고 기존 앱의 설치 경로와 CLI 자산을 확인했다.
 
 WorkManager 변환의 성능 기준은 일반 Release의 네이티브 `RelWithDebInfo` (`-O2 -g -DNDEBUG`)로 측정한다. 비슷한 배터리 온도에서 `-O2`와 `-O3`의 단일 실행 차이는 0.682초였다.
+
+### 정적 LCM JNI 통합 검증
+
+2026-11-12 Debug·Release APK 빌드와 JVM 테스트 45개가 통과했다. Debug lint는 오류 0개, 경고 35개를 보고했다. 두 APK의 ARM64 공유 라이브러리는 ZIP과 ELF에서 16 KiB 정렬을 확인했다. `RelWithDebInfo`의 Converter 컴파일 명령에는 `-O2 -g -DNDEBUG`가 적용됐다.
+
+Galaxy S20+ (SM-G986N, Android 13/API 33)의 격리 `RelWithDebInfo` APK에서 Android 회귀 26개가 통과했다. 합성 JNI 테스트 5개는 유니코드 LoRA 경로, 없는 파일과 잘못된 파일의 오류 코드, 입력·기존 출력 보존, 진행 콜백, 교차 스레드 취소와 `.partial` 정리를 검증했다. 기본 패키지명을 고정 비교하는 템플릿 테스트는 격리 실행에서 제외했다. 실제 백그라운드 변환 스모크는 이번 실행 범위에서 제외했다.
+
+같은 기기의 앱 전용 외부 저장소에 기존 CLI의 4,265,146,304바이트 SD 1.5 체크포인트, 공식 LoRA와 APK 내장본과 해시가 같은 HQQ B128 템플릿을 준비했다. 1 MiB 청크, HQQ 보정 20회, 계산 스레드 4개로 정적 LCM과 일반 HQQ를 순서대로 각 1회 실행했다. 파일 캐시는 제어하지 않았다. Converter 경과 시간은 정적 LCM 136.423초, 일반 HQQ 86.270초였다. 두 실행 모두 `Completed`와 `.partial` 부재를 확인했으며, 출력 세 파일의 이름·크기·SHA-256이 각각 기존 CLI 기준과 일치했다. 정적 LCM의 CLIP·VAE 해시는 위 일반 HQQ 기준값과 같았고 병합된 `unet.mnn`의 해시는 `3f06996145268ccd462f1d9e3b7707c5cc71773aadcb009f11bcc5b852c70763`이었다. [정적 LCM CLI 기준](https://github.com/PocketMuse/to-mnn/blob/a8bfba3389fa6fdac060cb17b3ee7f39669e5e9e/docs/sd15-discussion.md#2026-11-12--s20-정적-lcm-변환과-추론)
