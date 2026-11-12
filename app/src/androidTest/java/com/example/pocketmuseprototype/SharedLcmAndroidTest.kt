@@ -1,10 +1,18 @@
 package com.example.pocketmuseprototype
 
+import android.content.Context
+import android.text.format.Formatter
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.Lifecycle
@@ -56,10 +64,21 @@ class SharedLcmLibraryAndroidTest {
         compose.onNodeWithText(context.getString(R.string.library_error_hash)).assertIsDisplayed()
         compose.onNodeWithText(context.getString(R.string.library_downloads_empty)).assertDoesNotExist()
         compose.onNodeWithText(context.getString(R.string.library_lcm_retry)).performClick()
-        compose.onNodeWithText(context.getString(R.string.library_queued)).assertIsDisplayed()
-        compose.runOnIdle { state.value = SharedLcmState.Downloading(4096) }
-        compose.onNodeWithText(context.getString(R.string.library_downloading)).assertIsDisplayed()
-        compose.onNodeWithText(context.getString(R.string.library_cancel)).performClick()
+        val cancelLabel = context.getString(R.string.library_cancel_download, context.getString(R.string.library_lcm_name))
+        compose.onNode(hasContentDescription(cancelLabel) and SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
+        )).assertIsDisplayed()
+        compose.onNodeWithText("대기 중").assertDoesNotExist()
+        compose.runOnIdle { state.value = SharedLcmState.Downloading(Sd15LcmLora.SIZE / 2) }
+        compose.onNodeWithText("다운로드 중").assertDoesNotExist()
+        compose.onNode(hasContentDescription(cancelLabel) and SemanticsMatcher.expectValue(
+            SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.5f, 0f..1f)
+        )).performClick()
+        compose.runOnIdle { assertFalse(cancelled) }
+        compose.onNodeWithText(context.getString(R.string.library_dismiss_confirmation)).performClick()
+        compose.onNodeWithContentDescription(cancelLabel).performClick()
+        compose.onNodeWithText(context.getString(R.string.library_cancel_download_question)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.library_confirm_cancel_download)).performClick()
         compose.runOnIdle {
             assertTrue(cancelled)
             state.value = SharedLcmState.Verifying
@@ -67,10 +86,15 @@ class SharedLcmLibraryAndroidTest {
         compose.onNodeWithText(context.getString(R.string.library_verifying)).assertIsDisplayed()
         compose.runOnIdle { state.value = SharedLcmState.Ready }
         compose.onNodeWithText(context.getString(R.string.library_downloads_empty)).assertIsDisplayed()
-        compose.onNodeWithText(context.getString(R.string.library_lcm_ready), substring = true).assertIsDisplayed()
+        compose.onNodeWithText(sharedLcmSize(context)).assertIsDisplayed()
+        compose.onNodeWithText("사용 가능", substring = true).assertDoesNotExist()
         compose.onNodeWithText(context.getString(R.string.library_models_empty)).assertDoesNotExist()
         compose.onNodeWithText(context.getString(R.string.library_convert)).assertDoesNotExist()
         compose.onNodeWithText(context.getString(R.string.library_delete)).performClick()
+        compose.runOnIdle { assertFalse(deleted) }
+        compose.onNodeWithText(context.getString(R.string.library_dismiss_confirmation)).performClick()
+        compose.onNodeWithText(context.getString(R.string.library_delete)).performClick()
+        compose.onNodeWithText(context.getString(R.string.library_confirm_delete)).performClick()
         compose.runOnIdle { assertTrue(deleted) }
     }
 
@@ -136,7 +160,10 @@ class SharedLcmNetworkAndroidTest {
         compose.onNodeWithText("Library").performClick()
         compose.activityRule.scenario.recreate()
         compose.onNodeWithText("SD1.5 LCM LoRA").assertIsDisplayed()
-        compose.onNodeWithText(app.getString(R.string.library_lcm_ready), substring = true).assertIsDisplayed()
+        compose.onNodeWithText(sharedLcmSize(app)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(
+            app.getString(R.string.library_cancel_download, app.getString(R.string.library_lcm_name))
+        ).assertDoesNotExist()
     }
 
     @Test fun libraryCancelsLiveTransferAndRetryPublishesVerifiedAsset() {
@@ -162,9 +189,12 @@ class SharedLcmNetworkAndroidTest {
                 assertTrue(transfer.toString(), transfer is SharedLcmState.Downloading)
                 id
             }
-            val cancelLabel = app.getString(R.string.library_cancel)
-            compose.waitUntil(5_000) { compose.onAllNodesWithText(cancelLabel).fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithText(cancelLabel).performClick()
+            val cancelLabel = app.getString(R.string.library_cancel_download, app.getString(R.string.library_lcm_name))
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithContentDescription(cancelLabel).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithContentDescription(cancelLabel).performClick()
+            compose.onNodeWithText(app.getString(R.string.library_confirm_cancel_download)).performClick()
             runBlocking {
                 val cancelled = withTimeout(15_000) { work.first { it.single().state.isFinished }.single() }
                 assertEquals(first, cancelled.id)
@@ -183,11 +213,12 @@ class SharedLcmNetworkAndroidTest {
                     downloads.withVerifiedFile { it.length() to it.sha256() }
                 )
             }
-            val readyLabel = app.getString(R.string.library_lcm_ready)
+            val readySize = sharedLcmSize(app)
             compose.waitUntil(5_000) {
-                compose.onAllNodesWithText(readyLabel, substring = true).fetchSemanticsNodes().isNotEmpty()
+                compose.onAllNodesWithText(readySize).fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithContentDescription(cancelLabel).fetchSemanticsNodes().isEmpty()
             }
-            compose.onNodeWithText(readyLabel, substring = true).assertIsDisplayed()
+            compose.onNodeWithText(readySize).assertIsDisplayed()
         } finally {
             runBlocking {
                 if (downloads.state.first() == SharedLcmState.Ready) downloads.delete() else downloads.cancel()
@@ -195,3 +226,5 @@ class SharedLcmNetworkAndroidTest {
         }
     }
 }
+
+private fun sharedLcmSize(context: Context): String = Formatter.formatShortFileSize(context, Sd15LcmLora.SIZE)

@@ -259,6 +259,8 @@ private fun CheckpointCard(
                     enabled = onDownloadRequest != null,
                     modifier = Modifier.size(48.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
                         disabledContainerColor = Color.White.copy(alpha = 0.12f),
                         disabledContentColor = Color.White.copy(alpha = 0.64f)
                     )
