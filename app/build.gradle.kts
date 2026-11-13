@@ -10,7 +10,16 @@ ksp {
 }
 
 val converterBenchmark = providers.gradleProperty("converterBenchmark").orNull
-val sd15RuntimeRoot = providers.gradleProperty("sd15RuntimeRoot").orNull?.let(rootProject::file)
+val converterOnly = providers.gradleProperty("converterOnly").map(String::toBooleanStrict).getOrElse(false)
+val runtimeFixture = providers.gradleProperty("runtimeFixture").map(String::toBooleanStrict).getOrElse(false)
+val runtimeRootOverride = providers.gradleProperty("sd15RuntimeRoot").orNull
+val sd15RuntimeRoot = rootProject.file(runtimeRootOverride ?: "third_party/to-mnn")
+require(!converterOnly || (runtimeRootOverride == null && !runtimeFixture)) {
+    "converterOnly cannot be combined with sd15RuntimeRoot or runtimeFixture"
+}
+require(!runtimeFixture || converterBenchmark == null) {
+    "runtimeFixture and converterBenchmark use separate test packages"
+}
 require(converterBenchmark == null || converterBenchmark in setOf("Debug", "Release", "RelWithDebInfo")) {
     "converterBenchmark must be Debug, Release or RelWithDebInfo"
 }
@@ -40,7 +49,8 @@ android {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"
                 targets += "pocketmuse_converter"
-                if (sd15RuntimeRoot != null) {
+                arguments += "-DPOCKETMUSE_BUILD_RUNTIME=${if (converterOnly) "OFF" else "ON"}"
+                if (!converterOnly) {
                     arguments += "-DSD15_RUNTIME_ROOT=${sd15RuntimeRoot.invariantSeparatorsPath}"
                     targets += "pocketmuse_runtime"
                 }
@@ -56,6 +66,9 @@ android {
     }
 
     buildTypes {
+        if (runtimeFixture) {
+            debug { applicationIdSuffix = ".runtimefixture" }
+        }
         if (converterBenchmark != null) {
             debug {
                 applicationIdSuffix = ".converterbenchmark"

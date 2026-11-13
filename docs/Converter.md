@@ -77,7 +77,7 @@ WorkManager의 성공 상태, Room에 등록한 해시 및 실제 출력의 이�
 
 ```powershell
 $nativeConfig = 'Release'
-.\gradlew.bat "-PconverterBenchmark=$nativeConfig" :app:assembleDebug :app:assembleDebugAndroidTest
+.\gradlew.bat -PconverterOnly=true "-PconverterBenchmark=$nativeConfig" :app:assembleDebug :app:assembleDebugAndroidTest
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 ```

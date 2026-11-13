@@ -37,6 +37,7 @@ target_compile_options(pocketmuse_converter PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(pocketmuse_converter PRIVATE sd15_converter)
 target_link_options(pocketmuse_converter PRIVATE -Wl,-z,max-page-size=16384)
 
-if(SD15_RUNTIME_ROOT)
+option(POCKETMUSE_BUILD_RUNTIME "Build SD1.5 image inference" ON)
+if(POCKETMUSE_BUILD_RUNTIME)
     include(runtime.cmake)
 endif()

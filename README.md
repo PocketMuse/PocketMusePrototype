@@ -8,7 +8,7 @@ Market에서 체크포인트 다운로드를 요청하면 공용 SD1.5 LCM LoRA�
 
 JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 SHA-512가 고정된 nlohmann/json 3.12.0과 PicoSHA2 1.0.1 소스를 가져온다.
 
-Windows 프로젝트 루트에서 실행한다.
+일반 Debug·Release APK는 Runtime을 포함한다. 아래 절차로 네이티브 의존성을 준비한 뒤 Windows 프로젝트 루트에서 실행한다. Converter 전용 개발과 CI에는 `-PconverterOnly=true`를 명시할 수 있다. 이 모드는 MNN·ICU 준비 없이 기존 Converter를 빌드한다.
 
 ```powershell
 git submodule update --init third_party/to-mnn
@@ -16,13 +16,11 @@ git submodule update --init third_party/to-mnn
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-계측 테스트에는 연결된 ARM64 기기가 필요하다. 합성 Converter 테스트는 앱 캐시에 체크포인트와 템플릿을 만든다. [모델 다운로드와 Library](docs/Model-Downloads.md)
+계측 테스트에는 연결된 ARM64 기기가 필요하다. 테스트 종료 후 기존 설치가 제거될 수 있으므로, 모델이 저장된 기기에서는 아래의 `adb install -r`과 `am instrument`를 사용한다. [모델 다운로드와 Library](docs/Model-Downloads.md)
 
-## 실제 정적 LCM 추론 스모크
+## Runtime 빌드 준비
 
-기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 기기에 설치된 앱과 빌드 소스의 Room 스키마 버전 및 APK 서명이 일치해야 한다. 이 저장소의 `main`은 Room v3이다. Room v4 기기는 v4가 포함된 앱 소스에 Runtime 변경을 적용해 빌드한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
-
-Windows Git Bash에서 고정된 `third_party/to-mnn` 체크아웃을 준비한다. `VCPKG_ROOT`, Visual Studio C++ 도구, Ninja 및 위와 동일한 NDK의 `ANDROID_NDK_HOME`이 필요하다.
+Windows Git Bash에서 고정된 `third_party/to-mnn` 체크아웃을 준비한다. `VCPKG_ROOT`, Visual Studio C++ 도구, CMake·Ninja 및 앱과 동일한 NDK의 `ANDROID_NDK_HOME`이 필요하다. 기존 to-mnn 스크립트로 검증된 MNN 엔진을 빌드한다.
 
 ```bash
 git submodule update --init third_party/to-mnn
@@ -30,10 +28,32 @@ cd third_party/to-mnn
 uv python install 3.12
 uv sync --locked
 bash scripts/sd15.sh --prepare-tokenizer
-bash scripts/build-android.sh
+bash scripts/build-android.sh --mnn-only
 ```
 
-앱 프로젝트 루트의 PowerShell에서 실행한다. `$nativeRoot`는 동일한 고정 리비전으로 빌드한 별도 체크아웃의 경로로도 지정할 수 있다. `$key`는 기기 Library에 등록된 ToonYou의 `modelVersionId_fileId`로 설정한다. 여러 기기가 연결되어 있다면 `ANDROID_SERIAL`로 대상을 지정한다.
+`third_party/to-mnn`에서 아래 PowerShell 명령으로 MNN에 16 KiB 링크 옵션을 적용하고 새 빌드 영수증을 기록한다. 기존 4 KiB 영수증은 별도 이름으로 보존한다. 이 단계는 기존 4 KiB 엔진을 처음 준비했을 때 한 번 실행한다. [Android 16 KiB ELF 가이드](https://developer.android.com/guide/practices/page-sizes#compile-r27-lower)
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$engine = 'MNNRuntime/upstream-cda4a6f'
+$build = 'MNNRuntime/build-android-arm64-api28-cda4a6f'
+$verify = @('-B', '-m', 'scripts.tools.verify_mnn_android', '--source', $engine,
+    '--runtime', $build, '--ndk', $env:ANDROID_NDK_HOME, '--abi', 'arm64-v8a', '--api', '28', '--stl', 'c++_shared')
+& .venv/Scripts/python.exe @verify
+cmake -S $engine -B $build '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'
+cmake --build $build --target MNN --parallel
+Move-Item -LiteralPath "$build/engine-build.json" -Destination "$build/engine-build-4k.json"
+& .venv/Scripts/python.exe @verify --record-build
+```
+
+같은 체크아웃의 Git Bash에서 `bash scripts/build-android.sh --project-only`를 실행해 Android vcpkg ICU와 CMake 빌드 설정을 준비한다. 앱의 Gradle 빌드는 검증된 to-mnn 소스에서 Runtime을 직접 컴파일한다. 같은 고정 리비전의 별도 체크아웃을 사용하려면 `-Psd15RuntimeRoot=<경로>`를 지정한다. [빌드 검증 계약](docs/Runtime.md#빌드와-호출-계약)
+
+## 실제 정적 LCM 추론 스모크
+
+기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 앱은 Room v4를 사용하고 v1부터의 마이그레이션을 등록한다. 기존 설치와 같은 서명의 APK를 `adb install -r`로 설치한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
+
+앱 프로젝트 루트의 PowerShell에서 실행한다. `$key`는 Library에 등록된 모델의 `modelVersionId_fileId`다. 여러 기기가 연결되어 있다면 `ANDROID_SERIAL`로 대상을 지정한다.
 
 ```powershell
 $nativeRoot = (Resolve-Path 'third_party/to-mnn').Path
@@ -41,7 +61,7 @@ $key = '125771_90840'
 $pkg = 'com.example.pocketmuseprototype'
 $runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 $class = "$pkg.runtime.StaticLcmSmokeTest"
-.\gradlew.bat "-Psd15RuntimeRoot=$nativeRoot" :app:assembleDebug :app:assembleDebugAndroidTest
+.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
@@ -72,12 +92,33 @@ adb shell am instrument -w -r -e class "$class#reportsInitializationErrorAndPreC
 adb shell am instrument -w -r -e class "$class#propagatesCallbackFailureAndCancelsAfterFirstDenoisingStep" -e staticLcmCancelSmoke true -e storageKey $key $runner
 ```
 
+코루틴 취소·삭제 테스트에는 `-PruntimeFixture=true`로 빌드한 `com.example.pocketmuseprototype.runtimefixture`만 사용한다. 검증된 ToonYou 변환 출력 세 개의 **별도 사본**을 격리 앱의 외부 전용 디렉터리에 넣는다. 테스트는 사본을 Library에 등록하고 삭제한다. 아래 설치와 `$pkg` 설정 후 위의 Tokenizer 복사 블록을 실행한다.
+
+```powershell
+.\gradlew.bat -PruntimeFixture=true :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+$pkg = 'com.example.pocketmuseprototype.runtimefixture'
+```
+
+`$localModelCopy`는 세 출력 파일의 별도 로컬 사본이 있는 디렉터리다.
+
+```powershell
+$remote = "/sdcard/Android/data/$pkg/files/runtime-cancel-input"
+adb shell mkdir -p "$remote"
+foreach ($name in 'text_encoder.mnn','unet.mnn','vae_decoder.mnn') {
+    adb push (Join-Path $localModelCopy $name) "$remote/$name"
+}
+$test = 'com.example.pocketmuseprototype.runtime.StaticLcmSmokeTest#coroutineCancellationKeepsFixtureFilesUntilNativeReturn'
+adb shell am instrument -w -r -e class $test -e staticLcmDeleteSmoke true "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
 ## 실제 HQQ 모델 스모크
 
 로컬에 이미 준비한 SD 1.5 safetensors와 호환되는 HQQ 템플릿을 사용한다. `adb`가 여러 기기를 감지하면 `ANDROID_SERIAL`로 테스트 기기를 선택한다. Gradle의 기본 계측 실행은 종료할 때 테스트 앱과 대상 앱을 제거할 수 있으므로, 모델 입력을 준비한 뒤에는 스모크를 ADB로 직접 실행한다.
 
 ```powershell
-.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
+.\gradlew.bat -PconverterOnly=true :app:assembleDebug :app:assembleDebugAndroidTest
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
@@ -107,7 +148,7 @@ adb shell am instrument -w -r -e class com.example.pocketmuseprototype.conversio
 공용 LoRA가 없는 격리 패키지에 4,265,146,304바이트의 `v1-5-pruned-emaonly.safetensors`와 공식 SD 1.5 LCM LoRA를 준비한다. 테스트는 입력의 SHA-256을 확인한 뒤 체크포인트 공개 직후 상태를 만든다. LoRA 대기, 자동 WorkManager 예약, 변환 중 취소와 공용 LoRA 삭제, 재준비, 홈 화면에서 변환 완료를 검증한다. Library에 기록된 파일 크기와 SHA-256을 실제 출력과 대조한다. 기기 화면을 잠금 해제한 상태에서 실행한다.
 
 ```powershell
-.\gradlew.bat -PconverterBenchmark=RelWithDebInfo :app:assembleDebug :app:assembleDebugAndroidTest
+.\gradlew.bat -PconverterOnly=true -PconverterBenchmark=RelWithDebInfo :app:assembleDebug :app:assembleDebugAndroidTest
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 

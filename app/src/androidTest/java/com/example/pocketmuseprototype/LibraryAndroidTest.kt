@@ -15,8 +15,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.test.swipe
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -67,7 +65,7 @@ class LibraryAndroidTest {
                 slider.performSemanticsAction(SemanticsActions.SetProgress) { check(it(5f)) }
             }
             withTimeout(5_000) { settings.hqqIterations.first { it == 5 } }
-            slider.performTouchInput { swipe(percentOffset(.25f, .5f), percentOffset(.75f, .5f)) }
+            slider.performSemanticsAction(SemanticsActions.SetProgress) { check(it(15f)) }
             withTimeout(5_000) { settings.hqqIterations.first { it == 15 } }
             compose.activityRule.scenario.recreate()
             val drawerTitle = compose.onNodeWithText(activity.getString(R.string.conversion_settings_title))

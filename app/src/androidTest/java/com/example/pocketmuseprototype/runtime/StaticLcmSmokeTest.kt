@@ -6,14 +6,32 @@ import android.os.Build
 import android.os.Debug
 import android.os.SystemClock
 import android.util.Log
+import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.pocketmuseprototype.PocketMuseApplication
+import com.example.pocketmuseprototype.conversion.BundledHqqTemplate
 import com.example.pocketmuseprototype.conversion.sha256
+import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LibraryDatabase
+import com.example.pocketmuseprototype.download.LibraryModel
+import com.example.pocketmuseprototype.download.ModelConversionStatus
+import com.example.pocketmuseprototype.download.ModelStorage
+import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
 import java.io.File
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
@@ -36,7 +54,7 @@ class StaticLcmSmokeTest {
             val events = mutableListOf<Progress>()
             val beforePss = Debug.getPss()
             report("device=${Build.MODEL} Android=${Build.VERSION.RELEASE}/API${Build.VERSION.SDK_INT}" +
-                " ABI=${Build.SUPPORTED_ABIS.first()} build=debug runtime=Release" +
+                " ABI=${Build.SUPPORTED_ABIS.first()} build=debug runtimeOptimization=O3" +
                 " storageKey=$key backend=OpenCLBuffer precision=Low tuning=Fast lowMemory=true" +
                 " sampling=LCM steps=4 guidance=1.0 cache=off preview=off dynamicLoRA=off prompt=$PROMPT")
 
@@ -137,6 +155,111 @@ class StaticLcmSmokeTest {
                     report("cancelled after denoising 1/4 and returned after native cleanup")
                 }
             }
+        }
+    }
+
+    @Test
+    fun coroutineCancellationKeepsFixtureFilesUntilNativeReturn() {
+        assumeTrue(args.getString("staticLcmDeleteSmoke") == "true")
+        check(app.packageName == "com.example.pocketmuseprototype.runtimefixture") {
+            "This test deletes a model and requires -PruntimeFixture=true"
+        }
+        val tokenizer = verifiedTokenizer()
+        val external = checkNotNull(app.getExternalFilesDir(null))
+        val input = external.resolve("runtime-cancel-input")
+        val names = listOf("text_encoder.mnn", "unet.mnn", "vae_decoder.mnn")
+        val inputs = names.associateWith(input::resolve)
+        check(inputs.values.all { it.isFile && it.length() > 0 })
+        val sizes = inputs.mapValues { it.value.length() }
+        val hashes = inputs.mapValues { it.value.sha256() }
+
+        val storage = ModelStorage { external }
+        val version = 90401L
+        val fileId = 90402L
+        val key = ModelStorage.key(version, fileId)
+        val id = UUID.randomUUID().toString()
+        val checkpoint = storage.checkpoint(key)
+        val output = storage.conversionOutput(key, id)
+        val modelRoot = output.parentFile!!.parentFile!!
+        val db = Room.databaseBuilder(app, LibraryDatabase::class.java, LibraryDatabase.NAME)
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+            .build()
+        try {
+            runBlocking {
+                val dao = db.models()
+                check(dao.find(key) == null && !modelRoot.exists()) { "Fixture key already in use: $key" }
+                check(output.mkdirs())
+                for ((name, file) in inputs) check(file.renameTo(output.resolve(name)))
+                storage.prepare(key)
+                checkpoint.writeText("Isolated Runtime fixture")
+                val bytes = checkpoint.length()
+                val model = LibraryModel(
+                    key, version, version, fileId, "ToonYou deletion fixture", "Beta 6",
+                    checkpoint.name, bytes, null, null, UUID.randomUUID().toString(),
+                    downloadStatus = DownloadStatus.Downloaded, downloadedBytes = bytes, totalBytes = bytes,
+                    conversionStatus = ModelConversionStatus.Converted, conversionWorkId = id,
+                    conversionProgress = 100, conversionTemplateId = BundledHqqTemplate.ID,
+                    conversionRecipeId = STATIC_LCM_RECIPE, conversionFiles = Json.encodeToString(sizes),
+                    conversionHashes = Json.encodeToString(hashes),
+                )
+                dao.insert(model)
+
+                val firstStep = CompletableDeferred<Unit>()
+                val releaseCallback = CountDownLatch(1)
+                val steps = AtomicInteger()
+                val filesAtNativeReturn = CompletableDeferred<Boolean>()
+                val missing = File(app.cacheDir, "missing-${UUID.randomUUID()}")
+                val generation = launch {
+                    app.downloads.withStaticLcmOutput(key) { _, path ->
+                        try {
+                            StaticLcmRequest(path, tokenizer, PROMPT).generate { stage, step, _, _ ->
+                                if (stage == "denoising") {
+                                    steps.set(step)
+                                    if (step == 1) {
+                                        firstStep.complete(Unit)
+                                        check(releaseCallback.await(30, TimeUnit.SECONDS))
+                                    }
+                                }
+                            }
+                            fail("A cancelled generation must not return an image")
+                        } finally {
+                            filesAtNativeReturn.complete(checkpoint.isFile && names.all { output.resolve(it).isFile })
+                        }
+                    }
+                }
+                try {
+                    withTimeout(300_000) { firstStep.await() }
+                    try {
+                        StaticLcmRequest(missing, missing, PROMPT).generate()
+                        fail("Expected concurrent generation to be rejected")
+                    } catch (error: RuntimeGenerationException) {
+                        assertTrue(error.message.orEmpty().contains("in progress"))
+                    }
+                    generation.cancel()
+                    withTimeout(10_000) { app.downloads.remove(model) }
+                    assertEquals(DownloadStatus.Deleting, dao.find(key)?.downloadStatus)
+                    assertFalse(generation.isCompleted)
+                    assertFalse(filesAtNativeReturn.isCompleted)
+                    assertTrue(checkpoint.isFile && names.all { output.resolve(it).isFile })
+                    report("fixture is Deleting while the UNet session is held at denoising step 1")
+                } finally {
+                    releaseCallback.countDown()
+                }
+                withTimeout(30_000) { generation.join() }
+                assertTrue(generation.isCancelled)
+                assertTrue(filesAtNativeReturn.await())
+                assertTrue("Cancellation must reach native before all four steps", steps.get() in 1..3)
+                assertNull(dao.find(key))
+                assertFalse(modelRoot.exists())
+                try {
+                    StaticLcmRequest(missing, missing, PROMPT).generate()
+                    fail("Expected the missing model to fail after the native guard was released")
+                } catch (_: RuntimeInitializationException) {
+                    report("coroutine cancellation reached native at step ${steps.get()}; fixture removed after JNI returned")
+                }
+            }
+        } finally {
+            db.close()
         }
     }
 

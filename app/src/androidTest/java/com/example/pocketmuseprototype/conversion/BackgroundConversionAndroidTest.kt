@@ -188,6 +188,55 @@ class BackgroundConversionAndroidTest {
         }
     }
 
+    @Test fun migratesVersionThreeWithStaticLcmOutputAndLegacyMetadataIntact() = runBlocking {
+        val name = "library-v3-${UUID.randomUUID()}"
+        val file = app.getDatabasePath(name)
+        file.parentFile?.mkdirs()
+        val schema = instrumentation.context.assets
+            .open("${LibraryDatabase::class.java.name}/3.json").bufferedReader().use {
+                Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject
+            }
+        val attempt = UUID.randomUUID().toString()
+        val legacy = UUID.randomUUID().toString()
+        try {
+            SQLiteDatabase.openOrCreateDatabase(file, null).use { db ->
+                val entity = schema.getValue("entities").jsonArray.single().jsonObject
+                db.execSQL(entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", "models"))
+                schema.getValue("setupQueries").jsonArray.forEach { db.execSQL(it.jsonPrimitive.content) }
+                db.execSQL(
+                    """INSERT INTO models (
+                        storageKey, modelId, modelVersionId, fileId, modelName, versionName, fileName, fileSize,
+                        workId, downloadStatus, downloadedBytes, totalBytes, conversionStatus,
+                        conversionWorkId, conversionProgress, conversionTemplateId, conversionFiles,
+                        conversionHashes, conversionRecipeId, legacyOutput_workId, legacyOutput_templateId,
+                        legacyOutput_files, legacyOutput_hashes
+                    ) VALUES (
+                        '20_30', 10, 20, 30, 'Fixture', 'v1', 'fixture.safetensors', 40,
+                        'download', 'Downloaded', 40, 40, 'Converted', ?, 100, ?, ?, ?, ?, ?, ?, ?, ?
+                    )""",
+                    arrayOf(attempt, BundledHqqTemplate.ID, """{"unet.mnn":40}""", """{"unet.mnn":"hash"}""",
+                        STATIC_LCM_RECIPE, legacy, BundledHqqTemplate.ID, """{"unet.mnn":30}""",
+                        """{"unet.mnn":"legacy-hash"}""")
+                )
+                db.version = 3
+            }
+            withDatabase(name) { db ->
+                val row = checkNotNull(db.models().find("20_30"))
+                assertEquals(DownloadStatus.Downloaded, row.downloadStatus)
+                assertEquals(ModelConversionStatus.Converted, row.conversionStatus)
+                assertEquals(STATIC_LCM_RECIPE, row.conversionRecipeId)
+                assertEquals(attempt, row.conversionWorkId)
+                assertEquals("""{"unet.mnn":"hash"}""", row.conversionHashes)
+                assertEquals(legacy, row.legacyOutput?.workId)
+                assertEquals("""{"unet.mnn":"legacy-hash"}""", row.legacyOutput?.hashes)
+                assertNull(row.conversionHqqIterations)
+            }
+        } finally {
+            app.deleteDatabase(name)
+        }
+        Unit
+    }
+
     @Test fun staticNativeFailureReleasesTheOfficialLora() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("verifiedStaticFixture") == "true")
         check(app.packageName.endsWith(".converterbenchmark"))

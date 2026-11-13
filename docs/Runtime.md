@@ -2,17 +2,18 @@
 
 ## 빌드와 호출 계약
 
-- `-Psd15RuntimeRoot`로 Windows에서 준비한 to-mnn Android 빌드의 프로젝트 루트를 지정한다. Gradle은 별도 JNI 타깃에 `sd15_runtime`과 ICU의 i18n, uc, data 정적 라이브러리를 링크하고, `libMNN.so` 및 동일 NDK의 `libc++_shared.so`를 ARM64 APK에 넣는다. CMake는 고정 MNN 소스와 라이브러리의 빌드 영수증을 upstream 검증기로 검사한다. Runtime 아카이브와 ICU는 지정한 to-mnn 빌드에서 가져오므로 앱 서브모듈과 같은 리비전의 산출물을 준비한다. [빌드 및 실기기 명령](../README.md#실제-정적-lcm-추론-스모크) · [to-mnn 공개 API](../third_party/to-mnn/docs/cpp/public-api.md#android-앱-연동) · [Gradle 네이티브 빌드](https://developer.android.com/studio/projects/gradle-external-native-builds)
+- 일반 Debug·Release 빌드는 to-mnn의 `sd15_runtime` 타깃을 현재 Android 빌드에서 컴파일한다. 외부 `libsd15_runtime.a`는 링크 입력에서 제거했다. 기본 소스는 `third_party/to-mnn`이며, `-Psd15RuntimeRoot`로 같은 리비전의 체크아웃을 지정할 수 있다. 두 체크아웃의 HEAD와 깨끗한 작업 트리를 앱의 Git 서브모듈 기록에 대조한다. 입력이 누락되거나 검증에 실패하면 빌드가 중단된다. `-PconverterOnly=true`는 기존 Converter 테스트와 CI를 위한 명시적 모드다. [빌드 준비](../README.md#runtime-빌드-준비) · [to-mnn 공개 API](../third_party/to-mnn/docs/cpp/public-api.md#android-앱-연동)
+- to-mnn의 기존 검증기로 MNN의 소스·빌드 영수증·SHA-256·NDK를 확인한다. Android preset의 CMake 캐시에서 API 28, arm64-v8a, `c++_shared`, NDK 및 vcpkg ICU 경로를 대조하고 ICU 78.3 헤더와 정적 아카이브를 명시적으로 링크한다. MNN에는 16 KiB ELF LOAD 정렬을 요구한다. APK에 MNN과 앱 NDK의 `libc++_shared.so`를 패키징한다. [Gradle 네이티브 빌드](https://developer.android.com/studio/projects/gradle-external-native-builds)
 - `ModelDownloads.withStaticLcmOutput(storageKey)`는 앱의 Library에서 Downloaded·Converted·정적 LCM 상태, 템플릿 ID, 세 MNN 파일 및 기록된 크기와 SHA-256을 확인한다. 기존 변환 잠금을 빌린 경로의 수명 동안 잡는다. 삭제 요청이 들어오면 Room에 Deleting을 기록하고 호출이 반환한 뒤 삭제한다. 호출자는 콜백 안에서 생성과 취소 정리까지 기다린다. 이 잠금의 범위는 Workers와 UI가 공유하는 앱 프로세스다.
 - `StaticLcmRequest`는 앱에서 읽을 수 있는 모델·Tokenizer 디렉터리의 ASCII 절대 경로와 UTF-8 프롬프트를 받는다. `generate()`는 I/O 스레드에서 JNI의 Runtime을 만들고 한 장을 생성하며 512×512 HWC RGB8과 실제 seed를 반환한다. JNI는 프로세스 내 겹치는 생성 호출을 거부한다. 공개 진행 콜백은 호출 스레드에서 실행된다. 초기화·생성 실패는 각각 `RuntimeInitializationException`과 `RuntimeGenerationException`으로 구분하고 콜백 예외는 원본을 전달한다.
-- `requestCancel()`은 실행 전과 실행 중에 반복 호출할 수 있다. 코루틴이 취소되면 네이티브 토큰에 전달하고 작업 스레드가 반환할 때까지 기다린다. 네이티브가 확인한 취소는 `CancellationException`으로 전달한다. Runtime과 모델 세션은 C++ 스코프에서 정리되고 Kotlin은 JNI 반환 후 토큰을 해제한다. [to-mnn 취소·콜백 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
+- `requestCancel()`은 실행 전과 실행 중에 반복 호출할 수 있다. 코루틴이 취소되면 네이티브 토큰에 전달하고 작업 스레드가 반환할 때까지 기다린다. 네이티브가 확인한 취소는 `CancellationException`으로 전달한다. Runtime과 모델 세션은 C++ 스코프에서 정리되고 Kotlin은 JNI 반환 후 토큰을 해제한다. 프로세스 강제 종료 시 콜백과 정리 블록의 실행은 보장되지 않는다. Room에 기록된 `Deleting`은 다음 상태 대조에서 처리한다. [to-mnn 취소·콜백 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
 
 ## Checkpoints
 
-- Android 12 이상에서 앱이 기기의 공개 OpenCL 드라이버를 사용할 수 있도록 `libOpenCL.so`를 선택적으로 선언한다. 확인한 Galaxy S20+는 이 라이브러리를 공개하며, Runtime은 CLIP·UNet·VAE에서 OpenCL 장치 텐서와 동기화 경계를 검사하고 CPU fallback을 거부한다. 현재 사전 빌드 MNN의 ELF LOAD 정렬은 4 KiB다. 이 스모크 APK의 16 KiB 페이지 기기 호환성은 검증 범위 밖이다. [Android 벤더 라이브러리](https://developer.android.com/guide/topics/manifest/uses-native-library-element) · [Android 페이지 크기 지원](https://developer.android.com/guide/practices/page-sizes) · [Runtime 검증 근거](../third_party/to-mnn/docs/cpp/runtime.md#checkpoints)
+- Android 12 이상에서 앱이 기기의 공개 OpenCL 드라이버를 사용할 수 있도록 `libOpenCL.so`를 선택적으로 선언한다. Runtime은 CLIP·UNet·VAE에서 OpenCL 장치 텐서와 동기화 경계를 검사하고 CPU fallback을 거부한다. 고정 MNN `cda4a6f`를 같은 NDK와 OpenCL 설정으로 다시 링크했다. Debug·Release·격리 APK의 ARM64 공유 라이브러리 6개 모두에서 ELF LOAD 정렬 `0x4000`과 `zipalign -c -P 16 4` 통과를 확인했다. 연결된 S20+의 페이지 크기는 4096바이트이며 16 KiB 실행 환경은 확보하지 못했다. [Android 벤더 라이브러리](https://developer.android.com/guide/topics/manifest/uses-native-library-element) · [Android 페이지 크기 지원](https://developer.android.com/guide/practices/page-sizes) · [Runtime 검증 근거](../third_party/to-mnn/docs/cpp/runtime.md#checkpoints)
 - 타이밍은 단조 시계를 사용한다. 공개 진행 콜백은 모델 로딩 직전과 각 denoising 스텝 완료 시점에 온다. CLIP 구간은 CLIP 진입부터 UNet 진입까지, UNet 첫 구간은 모델 로딩·튜닝과 첫 스텝을 포함한다. 마지막 스텝부터 VAE 진입까지는 UNet 정리 구간이다. 총시간에는 모델·Tokenizer 확인, Runtime 생성, RGB 전달, PNG 저장 및 디코딩이 포함된다. 앱 PSS는 전후 표본이다. [진행 이벤트 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
 
-## Galaxy S20+ 검증
+## Galaxy S20+ 최초 검증
 
 2026-11-13 Galaxy S20+ (SM-G986N, Android 13/API 33, arm64-v8a)에서 Library에 등록된 ToonYou Beta 6 (`125771_90840`)을 사용했다. Room v4가 포함된 `17975d2`에 Runtime 변경을 적용한 Debug APK를 `adb install -r`로 설치했다. `main`의 Room v3 APK는 이 기기의 기존 DB를 열 수 없었다. 모델과 Room 스키마를 보존하기 위해 호환 빌드를 사용했다.
 
@@ -36,3 +37,11 @@ OpenCL Buffer, Low/Fast/Low Memory, 정적 LCM 4스텝, guidance 1.0, seed 42, �
 두 실행 모두 786,432바이트의 RGB8을 반환했고 디코딩한 PNG가 RGB 픽셀과 일치했다. 최종 결과는 앱 내부 `files/runtime-smoke/results/static-lcm-125771_90840-5959751605821458452.png`에 저장했다. ADB로 회수한 파일의 SHA-256은 `7ab02e4d5275a7467d3f6755c0270ac5a495646fb80fff7cd874a0721c3d16aa`다. 최종 실행의 전후 PSS 표본은 83,996 / 137,787 KiB였다.
 
 동일 기기에서 초기화 오류·실행 전 취소·콜백 예외 전달과 첫 denoising 스텝 이후 취소를 확인했다. 취소 테스트에서 JNI가 반환한 뒤 최종 생성 테스트를 통과했다. GPU 피크 메모리와 누수는 별도로 측정하지 않았다. Converter 계측 테스트 5개를 통과했고, 실계정 Civitai 재다운로드 및 실모델 재변환은 실행하지 않았다.
+
+## Room v4 통합 후 재검증
+
+Room v4와 HQQ 설정의 원본 브랜치(`17975d2`)를 Runtime 브랜치에 병합했다. Room은 v1→v2→v3→v4를 지원하며, v3의 정적 LCM 행과 기존 출력 메타데이터를 보존하는 계측 테스트를 추가했다. 기기의 기존 Library를 같은 서명의 APK로 업데이트했다.
+
+같은 S20+와 ToonYou 출력에서 기존 LCM 설정을 그대로 사용해 PNG 저장·디코딩을 다시 통과했다. 새 MNN의 SHA-256은 `5cb34b31c4210c908ec759134bf6841cf7e600b9331b98ba30138585437f3ea6`이다. CLIP 5.268초, UNet 로딩·튜닝과 첫 스텝 113.035초, 스텝 2–4 각각 7.599 / 7.614 / 7.651초, VAE 20.333초, `generate()` 161.665초, 전체 163.147초였다. OS·드라이버 캐시와 발열은 제어하지 않았다. 출력은 `files/runtime-smoke/results/static-lcm-125771_90840-3680609198582002374.png`이고 ADB로 회수한 SHA-256은 `3a329a12cbaa17f4aecc624c330fb667fb39c4743b90b2f6820914b9292f98cc`다.
+
+별도 `.runtimefixture` 설치에서 ToonYou 변환 파일 사본으로 첫 UNet denoising 스텝을 완료했다. 진행 콜백에서 UNet 세션을 잡은 상태로 중복 JNI 호출 거부를 확인하고, 생성 코루틴의 `Job.cancel()`과 모델 삭제를 요청했다. Room이 `Deleting`인 동안과 JNI 호출이 반환한 직후 파일이 남아 있었고, 이후 코루틴이 종료되며 사본과 Room 행이 삭제됐다. 다음 요청은 초기화 오류를 정상 반환했다. 이 테스트의 취소 지점은 GPU 스텝 사이의 공개 콜백이다. 실행 중인 개별 GPU 커널을 선점하는 동작이나 프로세스 강제 종료는 검증하지 않았다. [격리 테스트 재현](../README.md#실제-정적-lcm-추론-스모크)
