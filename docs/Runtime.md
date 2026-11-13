@@ -34,10 +34,74 @@ Debug 앱·계측 APK 빌드, JVM 테스트 72개, `lintDebug`, 실기기 대상
 
 ## Checkpoints
 
+- TAESD는 체크포인트와 독립적인 공용 APK 자산이다. Stage 2에서는 프리뷰가 필요한 요청 전에 `BundledTaesd.prepare(context)`를 호출하고, 반환된 파일의 `absolutePath`를 `RuntimeOptions.preview_decoder_path`에 전달한다. Runtime은 첫 프리뷰 스텝에서 모델을 로딩하므로 호출자는 `generate()`가 반환될 때까지 파일을 유지한다. [to-mnn 프리뷰 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
+- `prepare()`는 I/O 디스패처에서 프로세스 내 호출을 직렬화한다. 앱 전용 `noBackupFilesDir/taesd/taesd.mnn`의 ASCII 절대 경로와 파일 크기·SHA-256을 확인한다. 누락되거나 손상된 파일은 같은 디렉터리의 `taesd.mnn.partial`에 복사하고 검증한 뒤 원자적으로 교체한다. 이전에 남은 임시 파일은 다음 호출에서 정리하며, 설치에 실패하면 `IOException`을 전달한다. 대기 중인 호출은 취소할 수 있고, 이미 시작된 복사는 검증과 정리까지 끝날 수 있다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [Android ATOMIC_MOVE](https://developer.android.com/reference/java/nio/file/StandardCopyOption#ATOMIC_MOVE)
 - OpenCL 디스크 캐시는 기본 활성화된다. `noBackupFilesDir/opencl-cache/{storageKey}/{conversionWorkId}`를 JNI에서 `RuntimeOptions.cache_dir`로 전달한다. 같은 변환 UUID는 프로세스가 바뀌어도 같은 경로를 쓴다. `to-mnn`이 CLIP·UNet·VAE 실행 중 캐시를 열고 세션 해제까지 기록하며, 모델·엔진·실행 프로필에 따라 내부 파일을 구분한다. 캐시 경로를 사용할 수 없거나 파일 접근·잠금이 실패하면 Runtime은 디스크 캐시 없이 실행한다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [to-mnn 캐시 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
 - 모델 삭제 시 해당 `storageKey`의 캐시를 정리한다. 변환 출력 폐기 시 해당 작업 UUID의 캐시만 정리하며, 새 변환에는 새 UUID를 사용한다. 캐시 정리는 가능한 범위에서 수행한다. 강제 종료나 I/O 오류로 남은 캐시는 해당 UUID에 격리된다.
 - Android 12 이상에서 앱이 기기의 공개 OpenCL 드라이버를 사용할 수 있도록 `libOpenCL.so`를 선택적으로 선언한다. Runtime은 CLIP·UNet·VAE에서 OpenCL 장치 텐서와 동기화 경계를 검사하고 CPU fallback을 거부한다. 고정 MNN `cda4a6f`를 같은 NDK와 OpenCL 설정으로 다시 링크했다. Debug·Release·격리 APK의 ARM64 공유 라이브러리 6개 모두에서 ELF LOAD 정렬 `0x4000`과 `zipalign -c -P 16 4` 통과를 확인했다. 연결된 S20+의 페이지 크기는 4096바이트이며 16 KiB 실행 환경은 확보하지 못했다. [Android 벤더 라이브러리](https://developer.android.com/guide/topics/manifest/uses-native-library-element) · [Android 페이지 크기 지원](https://developer.android.com/guide/practices/page-sizes) · [Runtime 검증 근거](../third_party/to-mnn/docs/cpp/runtime.md#checkpoints)
 - 타이밍은 단조 시계를 사용한다. 공개 진행 콜백은 모델 로딩 직전과 각 denoising 스텝 완료 시점에 온다. CLIP 구간은 CLIP 진입부터 UNet 진입까지, UNet 첫 구간은 모델 로딩·튜닝과 첫 스텝을 포함한다. 마지막 스텝부터 VAE 진입까지는 UNet 정리 구간이다. 총시간에는 모델·Tokenizer 확인, Runtime 생성, RGB 전달, PNG 저장 및 디코딩이 포함된다. 앱 PSS는 전후 표본이다. [진행 이벤트 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
+
+## TAESD 프리뷰 디코더 번들
+
+공식 `madebyollin/taesd`의 `fdbae2df989db95761f482efb8977e1182fb68d2`에서 SD1/2용 `taesd_decoder.pth`를 사용한다. APK는 `assets/taesd/taesd.mnn`과 저작권·허가 문구를 포함한 MIT `LICENSE` 원문을 배포한다. PyTorch와 ONNX 파일은 개발용이다. MNN 가중치는 단일 파일에 내장되어 있다. [공식 가중치](https://github.com/madebyollin/taesd/blob/fdbae2df989db95761f482efb8977e1182fb68d2/taesd_decoder.pth) · [MIT 원문](https://github.com/madebyollin/taesd/blob/fdbae2df989db95761f482efb8977e1182fb68d2/LICENSE)
+
+| 산출물 | 크기(바이트) | SHA-256 |
+| --- | ---: | --- |
+| `taesd_decoder.pth` | 4,913,399 | `02873377c3f4659cd9f9adb2f718dcb434ba4c7bba3af3ee7bb95cbdabe2d3cf` |
+| `taesd.onnx` | 4,904,099 | `46ac89f4e9daa142f55f0d2fb18966e16ead16f14a1748ef3b9717dd4b95978a` |
+| `taesd.mnn` | 4,901,708 | `7f2f997fd230d9d752e741c71e79f6595384df7add2eaa8697ef11376cd0d808` |
+
+### 변환 재현
+
+[Runtime 빌드 환경](../README.md#runtime-빌드-준비)의 Windows Git Bash에서 `third_party/to-mnn`으로 이동해 아래 명령을 실행한다. MNNConvert는 Runtime과 같은 공식 MNN 3.6.1 커밋 `cda4a6f441b8ed58cc5c6f389359e5851e9d6322`에서 빌드한다. [고정 빌드 스크립트](../third_party/to-mnn/scripts/build-mnn-converter.sh)
+
+```bash
+uv sync --locked
+bash scripts/build-mnn-converter.sh
+```
+
+앱 프로젝트 루트의 PowerShell에서 실행한다. 검증한 Python 환경은 3.12.12, PyTorch 2.14.0+cpu, ONNX 1.23.0이다. 변환은 기존 `CONVERT_OPTIONS`를 사용하고 FP32 가중치를 유지한다. 변환기가 기본으로 생성하는 임의 UUID를 고정해 동일한 MNN SHA-256을 재현했다. [ONNX 내보내기](../third_party/to-mnn/src/sd15/export_taesd.py) · [변환 옵션](../third_party/to-mnn/src/sd15/export_mnn.py) · [MNN UUID 기록](https://github.com/alibaba/MNN/blob/cda4a6f441b8ed58cc5c6f389359e5851e9d6322/tools/converter/source/common/AddUUID.cpp)
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$stage = (New-Item -ItemType Directory -Force build/taesd-reproduce).FullName
+$upstream = 'https://raw.githubusercontent.com/madebyollin/taesd/fdbae2df989db95761f482efb8977e1182fb68d2'
+foreach ($name in 'taesd_decoder.pth', 'LICENSE') {
+    curl.exe --fail --location "$upstream/$name" --output "$stage/$name"
+}
+if ((Get-FileHash "$stage/taesd_decoder.pth").Hash -ne '02873377c3f4659cd9f9adb2f718dcb434ba4c7bba3af3ee7bb95cbdabe2d3cf') {
+    throw 'Unexpected TAESD checkpoint hash'
+}
+
+Push-Location third_party/to-mnn
+try {
+    $python = '.venv/Scripts/python.exe'
+    & $python -B -m scripts.tools.verify_mnn_converter
+    & $python -B src/sd15/export_taesd.py --checkpoint "$stage/taesd_decoder.pth" --output "$stage/taesd.onnx"
+    '{"version":"0.0.0","mnn_uuid":"105bcdc8-9887-4370-97d0-b585d7f5289f"}' |
+        Set-Content -Encoding ascii "$stage/conversion.json"
+    & MNNRuntime/build-converter-cda4a6f/MNNConvert.exe -f ONNX --modelFile "$stage/taesd.onnx" `
+        --MNNModel "$stage/taesd.mnn" --transformerFuse --optimizePrefer 2 --optimizeLevel 1 `
+        --compressionParamsFile "$stage/conversion.json"
+} finally {
+    Pop-Location
+}
+Get-FileHash "$stage/taesd.onnx", "$stage/taesd.mnn"
+```
+
+### 검증
+
+같은 소스 기준에서 이전 APK와 패키징 중간 산출물을 옮긴 뒤 두 빌드를 각각 다시 패키징했다. APK 전체 증가량에는 모델, MIT 고지, 설치 코드와 패키징 오버헤드가 포함된다.
+
+| APK | 적용 전(바이트) | 적용 후(바이트) | 증가(바이트) | 모델 ZIP 엔트리(바이트) |
+| --- | ---: | ---: | ---: | ---: |
+| Debug | 81,867,054 | 86,457,564 | 4,590,510 | 4,573,248 |
+| Release (unsigned) | 70,951,438 | 75,528,948 | 4,577,510 | 4,560,260 |
+
+- ONNX 검사기와 호스트 MNN Express CPU에서 입력 `latent_sample` NCHW FP32 `[1, 4, 64, 64]`, 출력 `sample` NCHW FP32 `[1, 3, 512, 512]`를 확인했다. NumPy PCG64 seed 42의 표준정규 FP32 latent 1개로 실제 디코딩해 ONNX Runtime CPU와 비교했다. FP32 가중치의 최대·평균 절대 오차는 각각 `7.33e-6`, `2.42e-7`이었다. 같은 입력에서 기존 헬퍼의 FP16 가중치 옵션은 최대 오차 `0.0187`로, 이번 비교 기준 `0.01`을 초과했다. [Runtime의 TAESD 입출력 검사](../third_party/to-mnn/cpp/runtime/src/mnn/express_preview_session.cpp)
+- Debug·Release·Debug 계측 APK 빌드, JVM 테스트 72개, `lintDebug`가 통과했다. Lint 결과는 오류 0개, 경고 37개였다. 두 앱 APK에서 모델과 라이선스의 SHA-256이 소스 자산과 일치했고, Runtime·Converter·MNN 네이티브 라이브러리의 SHA-256도 변경 전 APK와 일치했다.
+- Galaxy S20+(Android 13/API 33)에 Debug APK를 설치해 대상 계측 테스트 9개가 통과했다. TAESD 최초 설치와 동시 호출, 재사용, 동일 크기 손상과 누락 복구, 남은 임시 파일 정리, 경로 접근 및 해시를 확인했다. 기존 Tokenizer·RGB, Runtime 초기화 오류·사전 취소, Converter 계약도 검사했다. 복사 중 실제 프로세스 종료, Android OpenCL TAESD 실행, 전체 이미지 생성은 이번 검증 범위 밖이다.
 
 ## Galaxy S20+ 최초 검증
 
