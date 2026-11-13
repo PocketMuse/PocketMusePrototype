@@ -52,7 +52,9 @@ class ModelDownloadsTest {
     private val conversions = FakeScheduler()
     private var mounted = true
     private var cleanStaging: (File) -> ConversionErrorCode = { error("Unexpected staging cleanup") }
-    private val storage = ModelStorage(cleanupPartial = { cleanStaging(it) }) { folder.root.takeIf { mounted } }
+    private val storage = ModelStorage(noBackupFiles = { folder.root }, cleanupPartial = { cleanStaging(it) }) {
+        folder.root.takeIf { mounted }
+    }
     private val checkpoint = safeTensor()
     private val digest = MessageDigest.getInstance("SHA-256").digest(checkpoint).toHexString()
     private var token: String? = "fake-token"
@@ -347,6 +349,7 @@ class ModelDownloadsTest {
         val id = checkNotNull(model.conversionWorkId)
         val oldOutput = storage.conversionOutput(model.storageKey, id).apply { check(mkdirs()) }
         oldOutput.resolve("fixture.mnn").writeText("HQQ1")
+        val oldCache = cacheFixture(model.storageKey, id)
         store.update(model.copy(
             conversionStatus = ModelConversionStatus.Finalizing,
             conversionRecipeId = LEGACY_HQQ_RECIPE,
@@ -377,6 +380,7 @@ class ModelDownloadsTest {
         assertEquals(id, failed.legacyOutput?.workId)
         assertEquals(legacy.conversionHashes, failed.legacyOutput?.hashes)
         assertTrue(oldOutput.isDirectory)
+        assertTrue(oldCache.isFile)
 
         assertTrue(downloads.startConversion(failed))
         val retry = store.all().single()
@@ -396,6 +400,7 @@ class ModelDownloadsTest {
         assertTrue(converted.conversionHashes != legacy.conversionHashes)
         assertNull(converted.legacyOutput)
         assertFalse(oldOutput.exists())
+        assertFalse(oldCache.exists())
         assertTrue(newOutput.isDirectory)
         assertTrue(storage.checkpoint(model.storageKey).isFile)
     }
@@ -407,6 +412,8 @@ class ModelDownloadsTest {
         val output = storage.conversionOutput(model.storageKey, id)
         assertTrue(output.mkdirs())
         val file = File(output, "fixture.mnn").apply { writeText("MNN1") }
+        val oldCache = cacheFixture(model.storageKey, id)
+        val siblingCache = cacheFixture(model.storageKey, UUID.randomUUID().toString())
         store.update(model.copy(
             conversionStatus = ModelConversionStatus.Finalizing,
             conversionTemplateId = "fixture",
@@ -426,8 +433,11 @@ class ModelDownloadsTest {
         val failed = store.all().single()
         assertEquals("OUTPUT_INVALID", failed.conversionErrorCode)
         assertTrue(storage.checkpoint(model.storageKey).isFile)
+        assertTrue(oldCache.isFile)
         downloads.startConversion(failed)
         assertFalse(output.exists())
+        assertFalse(oldCache.exists())
+        assertTrue(siblingCache.isFile)
     }
 
     @Test fun invalidOutputMetadataFailsOnlyItsOwnModelAndAllowsRetry() = runBlocking {
@@ -594,9 +604,13 @@ class ModelDownloadsTest {
         )
         store.update(converted)
 
+        val cache = cacheFixture(converted.storageKey, directory.name)
+        val retiredCache = cacheFixture(converted.storageKey, UUID.randomUUID().toString())
+        val peerCache = cacheFixture(ModelStorage.key(21, 31), directory.name)
         val acquired = CompletableDeferred<File>()
         val borrower = launch {
-            downloads.withStaticLcmOutput(converted.storageKey) { _, output ->
+            downloads.withStaticLcmOutput(converted.storageKey) { _, output, cacheDir ->
+                assertEquals(cache.parentFile, cacheDir)
                 acquired.complete(output)
                 kotlinx.coroutines.awaitCancellation()
             }
@@ -606,11 +620,33 @@ class ModelDownloadsTest {
         downloads.reconcile()
         assertEquals(DownloadStatus.Deleting, store.all().single().downloadStatus)
         assertTrue(names.all { directory.resolve(it).isFile })
+        assertTrue(cache.isFile)
 
         borrower.cancelAndJoin()
         assertNull(store.find(converted.storageKey))
         assertFalse(directory.exists())
+        assertFalse(cache.exists())
+        assertFalse(retiredCache.exists())
+        assertTrue(peerCache.isFile)
     }
+
+    @Test fun cacheCleanupFailureDoesNotBlockModelDeletion() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        val blockedCacheRoot = folder.root.resolve("opencl-cache").apply { writeText("blocked") }
+
+        downloads.remove(model)
+
+        assertNull(store.find(model.storageKey))
+        assertFalse(storage.checkpoint(model.storageKey).exists())
+        assertEquals("blocked", blockedCacheRoot.readText())
+    }
+
+    private fun cacheFixture(key: String, id: String): File =
+        folder.root.resolve("opencl-cache/$key/$id/fixture.mnnc").apply {
+            parentFile!!.mkdirs()
+            writeText("Cache fixture")
+        }
 
     @Test fun unknownLengthReportsBytesAndDoesNotClaimHashVerification() = runBlocking {
         val downloads = downloads()

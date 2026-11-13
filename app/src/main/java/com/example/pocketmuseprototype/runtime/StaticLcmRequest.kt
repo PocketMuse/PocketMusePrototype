@@ -31,11 +31,15 @@ internal fun interface GenerationProgress {
     fun update(stage: String, step: Int, total: Int, elapsedNanos: Long)
 }
 
-/** One static LCM request. The caller keeps the model and tokenizer paths valid until return. */
+/**
+ * One static LCM request. Keep the model, tokenizer and optional cache paths valid until return.
+ * Runtime manages disk cache access. A null or invalid cache path allows uncached execution.
+ */
 internal class StaticLcmRequest(
     private val modelDir: File,
     private val tokenizerDir: File,
     private val prompt: String,
+    private val cacheDir: File?,
 ) {
     private val lock = Any()
     private var started = false
@@ -72,6 +76,7 @@ internal class StaticLcmRequest(
     private fun run(onProgress: GenerationProgress?): GeneratedImage {
         val model = modelDir.nativePath()
         val tokenizer = tokenizerDir.nativePath()
+        val cache = cacheDir?.takeIf { it.isNativePath() }?.path.orEmpty()
         val utf8Prompt = prompt.encodeToByteArray(throwOnInvalidSequence = true)
         val handle = synchronized(lock) {
             check(!started) { "A generation request can run only once" }
@@ -82,7 +87,7 @@ internal class StaticLcmRequest(
             }
         }
         try {
-            return NativeRuntime.generate(handle, model, tokenizer, utf8Prompt, onProgress)
+            return NativeRuntime.generate(handle, model, tokenizer, cache, utf8Prompt, onProgress)
         } finally {
             synchronized(lock) {
                 token = 0L
@@ -92,9 +97,11 @@ internal class StaticLcmRequest(
     }
 
     private fun File.nativePath(): String {
-        require(isAbsolute && path.all { it in ' '..'~' }) { "Expected an absolute ASCII path" }
+        require(isNativePath()) { "Expected an absolute ASCII path" }
         return path
     }
+
+    private fun File.isNativePath(): Boolean = isAbsolute && path.all { it in ' '..'~' }
 }
 
 @Keep
@@ -110,6 +117,7 @@ private object NativeRuntime {
         token: Long,
         modelDir: String,
         tokenizerDir: String,
+        cacheDir: String,
         prompt: ByteArray,
         onProgress: GenerationProgress?,
     ): GeneratedImage

@@ -87,7 +87,7 @@ class LibraryStorageAndroidTest {
     @Test fun roomPersistsModelAndAppSpecificStorageRemovesOnlyItsFiles() = runBlocking(Dispatchers.IO) {
         val name = "library-test-${UUID.randomUUID()}"
         val base = File(checkNotNull(context.getExternalFilesDir(null)), name)
-        val storage = ModelStorage { base }
+        val storage = ModelStorage(noBackupFiles = { File(context.noBackupFilesDir, name) }) { base }
         val other = "21_31"
         fun database() = Room.databaseBuilder(context, LibraryDatabase::class.java, name).build()
         try {

@@ -53,7 +53,7 @@ class PocketMuseApplication : Application() {
             .build()
         ModelDownloads(
             library.models(),
-            ModelStorage {
+            ModelStorage(noBackupFiles = { noBackupFilesDir }) {
                 getExternalFilesDir(null)?.takeIf {
                     Environment.getExternalStorageState(it) == Environment.MEDIA_MOUNTED
                 }

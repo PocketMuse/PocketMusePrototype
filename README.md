@@ -82,6 +82,18 @@ adb shell am instrument -w -r -e class "$class#generatesAndDecodesPng" -e static
 adb logcat -d -s StaticLcmSmoke:I
 ```
 
+Cold/Warm을 재현할 때는 새 `cacheRun` UUID로 테스트 전용 캐시를 선택한다. Cold는 경로가 비어 있어야 하며 Warm은 같은 UUID를 사용한다. 각각의 `am instrument` 호출에서 PID를 확인하고, 실행 중 다른 터미널에서 `adb shell dumpsys meminfo <pid>`로 PSS·RSS를 표본 수집할 수 있다.
+
+```powershell
+$run = [Guid]::NewGuid().ToString()
+$smoke = @('shell', 'am', 'instrument', '-w', '-r', '-e', 'class', "$class#generatesAndDecodesPng",
+    '-e', 'staticLcmSmoke', 'true', '-e', 'storageKey', $key, '-e', 'cacheRun', $run)
+adb @smoke -e expectColdCache true $runner
+adb @smoke $runner
+adb @smoke $runner
+adb logcat -d -s StaticLcmSmoke:I
+```
+
 `png=` 로그의 `runtime-smoke/results/…png` 경로를 사용해 회수한다. 아래 리디렉션은 PowerShell 7.4 이상에서 바이너리를 보존한다.
 
 ```powershell
@@ -178,6 +190,6 @@ Galaxy S20+에서 정적 LCM 모델의 OpenCL 추론, JNI 취소·오류 처리,
 - **프로세스 강제 종료:** 추론 중 프로세스가 종료되는 경우의 상태 복구 및 재실행은 검증하지 않았다.
 - **메모리 안정성:** 실행 전후 PSS 표본은 기록했지만 추론 중 피크 메모리, 반복 생성 시 메모리 누수 및 장시간 안정성은 측정하지 않았다.
 - **전체 사용자 흐름:** 실제 계정에서 체크포인트 재다운로드부터 정적 LCM 변환과 추론까지 연속 수행하는 E2E 검증은 실시하지 않았다.
-- **OpenCL 캐시:** 앱 추론은 디스크 캐시를 비활성화한 상태에서 검증했다. Cold/Warm 성능 및 메모리 비교는 후속 과제다.
+- **OpenCL 캐시:** 변환 결과별로 디스크 캐시를 기본 사용한다. [Galaxy S20+ Cold/Warm 측정](docs/Runtime.md#galaxy-s20-opencl-캐시-검증)
 
 위 항목은 현재 확인된 결함이 아니라 검증 범위의 한계다. 관련 기능 개발이나 실행 환경 확장 시 필요한 검증을 수행한다.

@@ -261,7 +261,7 @@ class BackgroundConversionAndroidTest {
     }
 
     private fun writeIncompleteCheckpoint(key: String): File {
-        val storage = ModelStorage { app.getExternalFilesDir(null) }
+        val storage = ModelStorage(noBackupFiles = { app.noBackupFilesDir }) { app.getExternalFilesDir(null) }
         val header = """{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}""".encodeToByteArray()
         storage.prepare(key)
         return storage.checkpoint(key).apply {
@@ -274,7 +274,7 @@ class BackgroundConversionAndroidTest {
         assumeTrue(InstrumentationRegistry.getArguments().getString("realBackgroundConversion") == "true")
         check(app.packageName.endsWith(".converterbenchmark"))
         val key = "90301_90302"
-        val storage = ModelStorage { app.getExternalFilesDir(null) }
+        val storage = ModelStorage(noBackupFiles = { app.noBackupFilesDir }) { app.getExternalFilesDir(null) }
         val checkpoint = storage.checkpoint(key)
         assertEquals(4_265_146_304L, checkpoint.length())
         assertEquals(CHECKPOINT_HASH, checkpoint.sha256())

@@ -535,10 +535,10 @@ internal class ModelDownloads(
             .also { if (it != model) store.update(it) }
 
     /**
-     * Lends the verified output while holding the conversion lock. The worker callback must
-     * finish any native work before returning, including on cancellation.
+     * Lends the verified output and its optional OpenCL cache path while holding the conversion
+     * lock. The callback must wait for native cleanup before returning, including on cancellation.
      */
-    suspend fun <T> withStaticLcmOutput(key: String, use: suspend (LibraryModel, File) -> T): T =
+    suspend fun <T> withStaticLcmOutput(key: String, use: suspend (LibraryModel, File, File?) -> T): T =
         withContext(Dispatchers.IO) {
             conversions.withLock {
                 val model = commands.withLock {
@@ -556,7 +556,8 @@ internal class ModelDownloads(
                         model.conversionTemplateId == BundledHqqTemplate.ID && model.conversionHashes != null &&
                         checkOutput(model) != null
                     ) { "Invalid static LCM output for $key" }
-                    use(model, storage.conversionOutput(key, checkNotNull(model.conversionWorkId)))
+                    val id = checkNotNull(model.conversionWorkId)
+                    use(model, storage.conversionOutput(key, id), storage.openClCacheDirectory(key, id))
                 } finally {
                     withContext(NonCancellable) {
                         commands.withLock {
