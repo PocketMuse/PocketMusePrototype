@@ -1,10 +1,10 @@
 package com.example.pocketmuseprototype.ui
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,18 +13,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -48,9 +45,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -61,6 +55,8 @@ import com.example.pocketmuseprototype.catalog.MarketViewModel
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.SharedLcmState
+import com.example.pocketmuseprototype.gallery.GalleryImage
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
@@ -68,7 +64,6 @@ private enum class AppTab(@get:StringRes val label: Int) {
     Market(R.string.tab_market),
     Library(R.string.tab_models)
 }
-
 private val ContentMaxWidth = 560.dp
 
 @Composable
@@ -91,10 +86,14 @@ internal fun PocketMuseApp(
     libraryRequest: Int = 0,
     hqqIterations: Int? = null,
     onRetryHqqSettings: (() -> Unit)? = null,
-    onHqqIterationsChange: suspend (Int) -> Unit = {}
+    onHqqIterationsChange: suspend (Int) -> Unit = {},
+    chatMessages: List<ChatGeneration> = emptyList(),
+    onGenerateImage: ((ChatImageRequest) -> Unit)? = null,
+    onCancelGeneration: (() -> Unit)? = null,
+    gallery: Flow<List<GalleryImage>>? = null,
+    onDeleteImage: suspend (String) -> Unit = {},
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
-    var draft by rememberSaveable { mutableStateOf("") }
     val tabStateHolder = rememberSaveableStateHolder()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -118,8 +117,19 @@ internal fun PocketMuseApp(
                 val drawerSemantics = if (drawerState.isClosed && !drawerState.isAnimationRunning) {
                     Modifier.clearAndSetSemantics {}
                 } else Modifier
-                Box(drawerSemantics) {
-                    ConversionSettingsContent(hqqIterations, onRetryHqqSettings, onHqqIterationsChange)
+                GalleryPanel(
+                    gallery = gallery.takeIf { drawerState.isOpen || drawerState.isAnimationRunning },
+                    onDelete = onDeleteImage,
+                    modifier = drawerSemantics.fillMaxSize(),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text(
+                            stringResource(R.string.conversion_settings_title),
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                        HorizontalDivider()
+                        ConversionSettingsContent(hqqIterations, onRetryHqqSettings, onHqqIterationsChange)
+                    }
                 }
             }
         }
@@ -142,13 +152,13 @@ internal fun PocketMuseApp(
                         modifier = Modifier.widthIn(max = ContentMaxWidth).fillMaxWidth()
                     )
                     when (selectedTab) {
-                        AppTab.Chat -> {
-                            Spacer(Modifier.weight(1f))
-                            ChatComposer(
-                                draft = draft,
-                                onDraftChange = { draft = it },
-                                modifier = Modifier.widthIn(max = ContentMaxWidth)
-                                    .fillMaxWidth().padding(bottom = 12.dp)
+                        AppTab.Chat -> tabStateHolder.SaveableStateProvider(AppTab.Chat.name) {
+                            ChatScreen(
+                                library = library,
+                                modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth(),
+                                messages = chatMessages,
+                                onGenerate = onGenerateImage,
+                                onCancelGeneration = onCancelGeneration,
                             )
                         }
                         AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {
@@ -225,40 +235,4 @@ private fun AppHeader(
             }
         }
     }
-}
-
-@Composable
-private fun ChatComposer(
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val colors = MaterialTheme.colorScheme
-    val inputLabel = stringResource(R.string.chat_input)
-    OutlinedTextField(
-        value = draft,
-        onValueChange = onDraftChange,
-        modifier = modifier.semantics { contentDescription = inputLabel },
-        placeholder = { Text(stringResource(R.string.chat_placeholder)) },
-        trailingIcon = {
-            FilledIconButton(
-                onClick = {},
-                enabled = false,
-                modifier = Modifier.padding(end = 8.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    disabledContainerColor = colors.surfaceContainerHigh,
-                    disabledContentColor = colors.onSurfaceVariant
-                )
-            ) {
-                Icon(painterResource(R.drawable.ic_arrow_up), stringResource(R.string.chat_send))
-            }
-        },
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        maxLines = 4,
-        shape = RoundedCornerShape(28.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = colors.surfaceContainerLow,
-            unfocusedContainerColor = colors.surfaceContainerLow
-        )
-    )
 }

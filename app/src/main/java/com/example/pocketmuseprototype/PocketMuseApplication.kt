@@ -23,6 +23,8 @@ import com.example.pocketmuseprototype.download.WorkManagerDownloads
 import com.example.pocketmuseprototype.download.WorkManagerConversions
 import com.example.pocketmuseprototype.download.WorkManagerSharedLcm
 import com.example.pocketmuseprototype.download.writeWebpThumbnail
+import com.example.pocketmuseprototype.gallery.GalleryRepository
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,10 +49,13 @@ class PocketMuseApplication : Application() {
     internal val sharedLcm by lazy {
         SharedLcmDownloads(SharedLcmStorage(noBackupFilesDir), WorkManagerSharedLcm(WorkManager.getInstance(this)))
     }
-    internal val downloads by lazy {
-        val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+    private val library by lazy {
+        Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
+            .addMigrations(*LibraryDatabase.migrations)
             .build()
+    }
+    internal val gallery by lazy { GalleryRepository(File(filesDir, "generated-images"), library.generatedImages()) }
+    internal val downloads by lazy {
         ModelDownloads(
             library.models(),
             ModelStorage(noBackupFiles = { noBackupFilesDir }) {

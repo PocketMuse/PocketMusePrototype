@@ -1,11 +1,35 @@
 # SD 1.5 Runtime JNI
 
+## Chat 이미지 생성
+
+- 기존 Chat에서 최적화된 정적 LCM 모델을 선택하고 프롬프트를 전송한다. Activity 범위 `ImageGenerationViewModel`은 모델 키·이름, 스텝, 프롬프트를 확보하고 한 번에 요청 하나를 실행한다. 프롬프트와 진행·완료·실패·취소 메시지는 ViewModel에 순서대로 쌓인다. 탭 이동, 백그라운드 진입, ViewModel이 유지되는 Activity 재생성 뒤에도 세션이 유지된다. Activity가 종료되면 생성 중인 작업을 취소하고, 새 프로세스의 Chat은 빈 목록으로 시작한다. [Android ViewModel 수명](https://developer.android.com/topic/libraries/architecture/viewmodel#lifecycle)
+- 스텝은 2·4·6·8이며 기본값은 4다. LCM, guidance 1.0, 512×512, OpenCL Buffer, Low 정밀도, Fast 튜닝, Low Memory와 영속 디스크 캐시를 사용한다. Negative prompt는 비우고 동적 LoRA와 프리뷰는 비활성화한다. `GenerateOptions`의 기본 seed `-1`로 Runtime이 매 요청의 seed를 정한다. [to-mnn 생성 요청 계약](../third_party/to-mnn/docs/cpp/public-api.md#생성-요청)
+- APK에 포함된 SD1.5 CLIP `vocab.json`과 `merges.txt`는 생성 전에 `noBackupFilesDir/sd15-tokenizer/`에 준비한다. SHA-256이 맞으면 재사용하고, 누락되거나 손상된 파일은 임시 파일에 복사하고 검증한 뒤 원자적으로 교체한다. 두 파일이 검증된 뒤 앱 전용 디렉터리 경로를 JNI에 전달한다. [고정 리비전의 Tokenizer 원본](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/tree/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/tokenizer)
+- Chat은 전송한 프롬프트를 오른쪽 말풍선에 표시하고 입력창을 비운다. 이미지와 진행 상태는 왼쪽 응답 영역에 표시한다. CLIP·UNet 준비·VAE 구간은 단계별 상태로, denoising 구간은 콜백의 `step`과 `total`로 표시한다. 우하단 전송 버튼은 생성 중 정지 버튼으로 바뀐다. 취소를 누르면 코루틴을 취소하고 JNI와 모델 대여가 정리될 때까지 버튼을 비활성화한다. 모델을 사용할 수 없으면 Library에서 상태를 확인하도록 안내한다.
+- HWC RGB8을 작업 스레드에서 Bitmap으로 변환한 뒤 Gallery에 저장한다. Chat의 완료 메시지는 파일 참조를 보관하고 Coil이 표시 크기에 맞춰 디코딩한다. 저장에 실패하면 Chat에 오류와 이미지를 표시할 수 있으며 다음 요청에서 그 Bitmap 참조를 해제한다. 메시지 추가 시 최신 항목으로 이동하고, 이전 메시지를 읽는 중에는 진행률 변경이 스크롤을 이동시키지 않는다. [Compose 지연 목록](https://developer.android.com/develop/ui/compose/lists) · [Coil AsyncImage](https://coil-kt.github.io/coil/compose/)
+
+## Gallery
+
+- 왼쪽 메뉴를 열면 PocketMuse 제목과 구분선, 양자화 보정 설정, Gallery 순으로 표시된다. Gallery 제목 아래에는 최신순 2열 썸네일이 이어진다. 이미지를 누르면 원본과 모델명·프롬프트·스텝을 확인할 수 있다. 삭제는 확인 뒤 실행되며 현재 Chat의 해당 이미지에는 사용할 수 없다는 안내가 표시된다.
+- `filesDir/generated-images/{uuid}.png`에 원본 PNG를 저장한다. 기존 Room DB의 v4→v5 마이그레이션은 `generated_images` 테이블을 추가한다. 각 행은 ID, 파일명, 생성 시각, 모델명, 프롬프트, 스텝을 보유한다. Gallery와 Library 모델은 독립적으로 삭제할 수 있다. 앱을 다시 열면 Gallery를 조회할 수 있고 Chat 메시지는 새로 시작한다. [앱 전용 파일](https://developer.android.com/training/data-storage/app-specific) · [Room 마이그레이션](https://developer.android.com/training/data-storage/room/migrating-db-versions)
+- 저장소는 임시 PNG를 인코딩하고 디코딩 검증을 거쳐 최종 이름으로 이동한 뒤 Room 행을 추가한다. 등록에 실패하면 새 PNG를 정리한다. 삭제는 PNG를 임시 이름으로 옮긴 뒤 Room 행을 지운다. 행 삭제가 실패하면 PNG를 되돌린다. 재실행 시 Gallery에 처음 접근할 때 중단된 삭제를 행의 유무에 따라 복구하거나 마무리하며 등록되지 않은 Gallery 파일과 임시 파일을 정리한다. 파일이 누락된 행은 화면에서 숨긴다. 파일과 메타데이터는 함께 기기 백업과 기기 이전에서 제외한다.
+
+2026-11-13 Galaxy S20+ (SM-G986N, Android 13)에서 기존 ToonYou 모델로 2스텝 생성 취소, Library 이동 및 Activity 재생성, 4스텝 Chat 결과와 Gallery PNG 저장을 확인했다. `am force-stop` 후 다시 실행하니 Chat 목록은 비어 있었고 Gallery에서 512×512 결과와 모델명·프롬프트·스텝을 다시 열 수 있었다.
+
+Debug 앱·계측 APK 빌드, JVM 테스트 72개, `lintDebug`, 실기기 대상 계측 8개가 통과했다. 대상 계측에는 v4 Library 행 보존, PNG 재오픈, 파일 및 DB 오류, 삭제 롤백 및 중단 복구, Gallery 상세·삭제·빈 화면, Chat 누적과 실제 생성이 포함된다. 대량 이미지의 메모리 사용량은 별도로 계측하지 않았다.
+
+## 기존 Chat Runtime 검증
+
+2026-11-13 Galaxy S20+ (SM-G986N, Android 13/API 33)에서 Debug APK를 `adb install -r`로 업데이트하고 기존 ToonYou Beta 6 (`125771_90840`)와 CLIP·UNet·VAE 운영 캐시를 재사용했다. Chat 계측에서 2스텝 요청의 첫 denoising 스텝 직후 취소를 확인했다. 이어 `masterpiece, best quality, a cute cat`으로 4스텝 요청을 전송하고 Library로 이동한 상태에서 Activity를 재생성한 뒤, Chat에서 512×512 이미지 표시를 확인했다. 전송부터 이미지 표시 확인까지의 단일 Warm 표본은 45.091초였으며 탭 이동·Activity 재생성·UI 확인을 포함한다. [Chat 계측 재현 명령](../README.md#실제-정적-lcm-추론-스모크)
+
+`:app:assembleDebug`, `:app:assembleDebugAndroidTest`, JVM 테스트 72개와 Galaxy S20+의 대상 계측 8개가 통과했다. 계측 범위에는 Chat 상호작용, Tokenizer 재사용·손상 복구, RGB 채널 순서, JNI 초기화 오류와 사전 취소, 실제 취소 후 재생성이 포함된다. 이 변경에서는 6·8스텝의 실기기 추론, Cold 캐시 재측정, 다른 기기의 GPU·메모리 안정성을 검증하지 않았다.
+
 ## 빌드와 호출 계약
 
 - 일반 Debug·Release 빌드는 to-mnn의 `sd15_runtime` 타깃을 현재 Android 빌드에서 컴파일한다. 외부 `libsd15_runtime.a`는 링크 입력에서 제거했다. 기본 소스는 `third_party/to-mnn`이며, `-Psd15RuntimeRoot`로 같은 리비전의 체크아웃을 지정할 수 있다. 두 체크아웃의 HEAD와 깨끗한 작업 트리를 앱의 Git 서브모듈 기록에 대조한다. 입력이 누락되거나 검증에 실패하면 빌드가 중단된다. `-PconverterOnly=true`는 기존 Converter 테스트와 CI를 위한 명시적 모드다. [빌드 준비](../README.md#runtime-빌드-준비) · [to-mnn 공개 API](../third_party/to-mnn/docs/cpp/public-api.md#android-앱-연동)
 - to-mnn의 기존 검증기로 MNN의 소스·빌드 영수증·SHA-256·NDK를 확인한다. Android preset의 CMake 캐시에서 API 28, arm64-v8a, `c++_shared`, NDK 및 vcpkg ICU 경로를 대조하고 ICU 78.3 헤더와 정적 아카이브를 명시적으로 링크한다. MNN에는 16 KiB ELF LOAD 정렬을 요구한다. APK에 MNN과 앱 NDK의 `libc++_shared.so`를 패키징한다. [Gradle 네이티브 빌드](https://developer.android.com/studio/projects/gradle-external-native-builds)
 - `ModelDownloads.withStaticLcmOutput(storageKey)`는 앱의 Library에서 Downloaded·Converted·정적 LCM 상태, 템플릿 ID, 세 MNN 파일 및 기록된 크기와 SHA-256을 확인한다. 모델과 OpenCL 캐시 경로를 빌려주는 동안 기존 변환 잠금을 잡는다. 삭제 요청이 들어오면 Room에 Deleting을 기록하고 콜백이 반환한 뒤 삭제한다. 호출자는 콜백 안에서 생성과 취소 정리까지 기다린다. 이 잠금의 범위는 Workers와 UI가 공유하는 앱 프로세스다.
-- `StaticLcmRequest`는 앱에서 읽을 수 있는 모델·Tokenizer 디렉터리, 선택적 캐시 디렉터리의 ASCII 절대 경로 및 UTF-8 프롬프트를 받는다. `generate()`는 I/O 스레드에서 JNI의 Runtime을 만들고 한 장을 생성하며 512×512 HWC RGB8과 실제 seed를 반환한다. JNI는 프로세스 내 겹치는 생성 호출을 거부한다. 공개 진행 콜백은 호출 스레드에서 실행된다. 초기화·생성 실패는 각각 `RuntimeInitializationException`과 `RuntimeGenerationException`으로 구분하고 콜백 예외는 원본을 전달한다.
+- `StaticLcmRequest`는 앱에서 읽을 수 있는 모델·Tokenizer 디렉터리와 선택적 캐시 디렉터리의 ASCII 절대 경로, UTF-8 프롬프트, 스텝 수를 받는다. `generate()`는 I/O 스레드에서 JNI의 Runtime을 만들고 한 장을 생성하며 512×512 HWC RGB8과 실제 seed를 반환한다. JNI는 프로세스 내 겹치는 생성 호출을 거부한다. 공개 진행 콜백은 호출 스레드에서 실행된다. 초기화·생성 실패는 각각 `RuntimeInitializationException`과 `RuntimeGenerationException`으로 구분하고 콜백 예외는 원본을 전달한다.
 - `requestCancel()`은 실행 전과 실행 중에 반복 호출할 수 있다. 코루틴이 취소되면 네이티브 토큰에 전달하고 작업 스레드가 반환할 때까지 기다린다. 네이티브가 확인한 취소는 `CancellationException`으로 전달한다. Runtime과 모델 세션은 C++ 스코프에서 정리되고 Kotlin은 JNI 반환 후 토큰을 해제한다. 프로세스 강제 종료 시 콜백과 정리 블록의 실행은 보장되지 않는다. Room에 기록된 `Deleting`은 다음 상태 대조에서 처리한다. [to-mnn 취소·콜백 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
 
 ## Checkpoints

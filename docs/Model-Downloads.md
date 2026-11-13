@@ -96,7 +96,7 @@ Market → Image에서 Civitai 연결 후 체크포인트를 선택한다. 버�
 
 ## 저장 계약
 
-- Room v4의 `model-library.db`에 `models` 테이블을 둔다. 기본 키 `storageKey`는 양의 정수인 `{modelVersionId}_{fileId}`다. `fileSize`는 처음에는 `sizeKB`로 계산한 추정치이고 완료 후에는 검증된 실제 바이트 수다. `totalBytes`는 응답이 길이를 제공하지 않으면 전송이 끝날 때까지 null이다. v1에서 기존 다운로드를 보존하고 변환 상태를 `NotStarted`로 초기화한다. v2에서 기존 작업 ID, 출력 메타데이터와 해시를 보존하며 이미 시도한 작업을 Legacy HQQ로 식별한다. 다운로드만 완료된 모델은 Library에서 변환을 시작할 수 있다. [Room 스키마](../app/schemas/com.example.pocketmuseprototype.download.LibraryDatabase/4.json)
+- Room v5의 `model-library.db`에 `models` 테이블을 둔다. 기본 키 `storageKey`는 양의 정수인 `{modelVersionId}_{fileId}`다. `fileSize`는 처음에는 `sizeKB`로 계산한 추정치이고 완료 후에는 검증된 실제 바이트 수다. `totalBytes`는 응답이 길이를 제공하지 않으면 전송이 끝날 때까지 null이다. v1에서 기존 다운로드를 보존하고 변환 상태를 `NotStarted`로 초기화한다. v2에서 기존 작업 ID, 출력 메타데이터와 해시를 보존하며 이미 시도한 작업을 Legacy HQQ로 식별한다. 다운로드만 완료된 모델은 Library에서 변환을 시작할 수 있다. [Room 스키마](../app/schemas/com.example.pocketmuseprototype.download.LibraryDatabase/5.json)
 - `ModelStorage`는 `Context.getExternalFilesDir(null)/models/{storageKey}/`에 경로를 계산한다. `thumbnail.webp`, `source/checkpoint.safetensors` 및 전송 중 `source/checkpoint.safetensors.part`를 사용한다. 변환 출력은 같은 모델 디렉터리의 `converted/{conversionWorkId}/`에 저장한다. Room과 작업 입력은 체크포인트 URL과 인증 정보를 보관하지 않는다. 썸네일은 쿼리와 프래그먼트를 제거한 URL만 보관한다. Android의 클라우드 백업과 기기 간 전송에서 모델 DB와 `models/`를 제외한다. [앱 전용 외부 저장소](https://developer.android.com/training/data-storage/app-specific#external), [Android Auto Backup](https://developer.android.com/identity/data/autobackup)
 
 ## Checkpoints

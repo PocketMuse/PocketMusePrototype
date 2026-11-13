@@ -91,7 +91,7 @@ class StaticLcmSmokeTest {
             }
             report("seed=${image.seed} runtimeCreationMs=${ms(image.runtimeNanos)}" +
                 " generateMs=${ms(image.generateNanos)}")
-            assertEquals(42L, image.seed)
+            assertTrue(image.seed in 0..0xffff_ffffL)
             assertEquals(512, image.width)
             assertEquals(512, image.height)
             assertEquals(786_432, image.rgb.size)
@@ -207,7 +207,7 @@ class StaticLcmSmokeTest {
         val modelRoot = output.parentFile!!.parentFile!!
         val cacheDir = app.noBackupFilesDir.resolve("opencl-cache/$key/$id")
         val db = Room.databaseBuilder(app, LibraryDatabase::class.java, LibraryDatabase.NAME)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+            .addMigrations(*LibraryDatabase.migrations)
             .build()
         try {
             runBlocking {

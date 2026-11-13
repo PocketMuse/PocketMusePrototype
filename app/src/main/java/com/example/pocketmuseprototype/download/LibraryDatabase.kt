@@ -13,6 +13,8 @@ import androidx.room.RoomDatabase
 import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.pocketmuseprototype.gallery.GeneratedImageDao
+import com.example.pocketmuseprototype.gallery.GeneratedImageRecord
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 
@@ -118,9 +120,10 @@ internal interface LibraryDao : LibraryStore {
     override suspend fun delete(model: LibraryModel)
 }
 
-@Database(entities = [LibraryModel::class], version = 4)
+@Database(entities = [LibraryModel::class, GeneratedImageRecord::class], version = 5)
 internal abstract class LibraryDatabase : RoomDatabase() {
     abstract fun models(): LibraryDao
+    abstract fun generatedImages(): GeneratedImageDao
 
     companion object {
         const val NAME = "model-library.db"
@@ -150,5 +153,22 @@ internal abstract class LibraryDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE models ADD COLUMN conversionHqqIterations INTEGER")
             }
         }
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS generated_images (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        fileName TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        modelName TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        steps INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+        val migrations = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
     }
 }

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="database" path="model-library.db" />
+    <exclude domain="file" path="generated-images" />
     <exclude domain="external" path="models" />
 </full-backup-content>
