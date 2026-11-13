@@ -46,6 +46,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.pocketmuseprototype.R
@@ -56,6 +57,7 @@ import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.gallery.GalleryImage
+import com.example.pocketmuseprototype.ui.theme.BrandFontFamily
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
@@ -125,6 +127,8 @@ internal fun PocketMuseApp(
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
                             stringResource(R.string.conversion_settings_title),
+                            fontFamily = BrandFontFamily,
+                            fontWeight = FontWeight.Medium,
                             style = MaterialTheme.typography.headlineSmall
                         )
                         HorizontalDivider()

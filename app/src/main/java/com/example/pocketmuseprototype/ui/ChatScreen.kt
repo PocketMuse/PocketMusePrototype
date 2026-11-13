@@ -60,15 +60,18 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import coil3.compose.AsyncImage
@@ -82,6 +85,7 @@ import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
 import com.example.pocketmuseprototype.runtime.DEFAULT_STATIC_LCM_STEPS
 import com.example.pocketmuseprototype.runtime.StaticLcmSteps
+import com.example.pocketmuseprototype.ui.theme.BrandFontFamily
 import java.io.File
 
 /** One independent prompt, with the selected Library storage key and denoising step count. */
@@ -148,12 +152,26 @@ internal fun ChatScreen(
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             if (messages.isNotEmpty()) {
                 ChatContent(messages)
-            } else if (onGenerate == null || models.isEmpty()) {
+            } else {
                 Text(
-                    stringResource(if (onGenerate == null) R.string.chat_generation_unavailable else R.string.chat_models_empty),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    stringResource(R.string.chat_empty_brand),
+                    modifier = Modifier.padding(horizontal = 24.dp).clearAndSetSemantics {},
+                    fontFamily = BrandFontFamily,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 40.sp,
+                    letterSpacing = 0.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                if (onGenerate == null || models.isEmpty()) {
+                    Text(
+                        stringResource(if (onGenerate == null) R.string.chat_generation_unavailable else R.string.chat_models_empty),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
         TextButton(onClick = { showModels = true }, enabled = !isGenerating) {
