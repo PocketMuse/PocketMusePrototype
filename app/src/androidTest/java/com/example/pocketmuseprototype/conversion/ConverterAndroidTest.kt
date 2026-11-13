@@ -8,7 +8,6 @@ import java.nio.ByteOrder
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,25 +17,19 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ConverterAndroidTest {
     @Test
-    fun publishesOutputBeforeCompletionCallbackWithDefaultHqqIterations() = withFixture { fixture ->
+    fun deliversResultAndProgressOnCallingThreadWithDefaultHqqIterations() = withFixture { fixture ->
         val callingThread = Thread.currentThread()
         val events = mutableListOf<ConversionProgress>()
         var onCallingThread = true
-        var publishedAtCompletion = false
         val result = ConversionRequest(fixture.options).run { progress ->
             onCallingThread = onCallingThread && Thread.currentThread() == callingThread
             events += progress
-            if (progress.stage == ConversionStage.Completed) {
-                publishedAtCompletion = fixture.outputFile.isFile && fixture.outputFile.length() == 13L
-            }
         }
 
         assertEquals(ConversionStatus.Succeeded, result.status)
         assertEquals(ConversionErrorCode.NONE, result.errorCode)
         assertEquals(0, result.hqqIterations)
         assertEquals(listOf(ConvertedFile("model.mnn", 13)), result.files)
-        assertFalse(fixture.partial.exists())
-        assertTrue(publishedAtCompletion)
         assertTrue(onCallingThread)
         assertEquals(ConversionStage.Validating, events.first().stage)
         assertEquals(null, events.first().remainingMillis)
@@ -44,20 +37,10 @@ class ConverterAndroidTest {
         assertEquals(1.0, events.last().fraction, 0.0)
         assertEquals(13L, events.last().completedBytes)
         assertEquals(13L, events.last().totalBytes)
-        assertTrue(events.dropLast(1).all { it.fraction <= 0.99 })
-        assertTrue(events.zipWithNext().all { (a, b) -> a.completedBytes <= b.completedBytes })
-
-        val published = fixture.outputFile.readBytes()
-        val duplicate = ConversionRequest(fixture.options).run()
-        assertEquals(ConversionStatus.Failed, duplicate.status)
-        assertEquals(ConversionErrorCode.OUTPUT_EXISTS, duplicate.errorCode)
-        assertTrue(duplicate.files.isEmpty())
-        assertArrayEquals(published, fixture.outputFile.readBytes())
     }
 
     @Test
-    fun lcmLoraPathReachesNativeValidationAndPreservesFiles() = withFixture { fixture ->
-        val checkpoint = fixture.options.checkpoint.readBytes()
+    fun passesUnicodeLoraPathAndMapsNativeErrors() = withFixture { fixture ->
         val lora = fixture.options.templateDir.resolve("어댑터-📦.safetensors")
         val options = fixture.options.copy(lcmLora = lora)
         val stages = mutableListOf<ConversionStage>()
@@ -67,8 +50,6 @@ class ConverterAndroidTest {
         assertEquals(ConversionErrorCode.READ_FAILED, missing.errorCode)
         assertTrue(missing.files.isEmpty())
         assertEquals(listOf(ConversionStage.Validating), stages)
-        assertFalse(fixture.partial.exists())
-        assertFalse(fixture.options.outputDir.exists())
 
         val invalidBytes = "not the official adapter".encodeToByteArray()
         lora.writeBytes(invalidBytes)
@@ -76,19 +57,6 @@ class ConverterAndroidTest {
         assertEquals(ConversionStatus.Failed, invalid.status)
         assertEquals(ConversionErrorCode.INVALID_INPUT, invalid.errorCode)
         assertTrue(invalid.files.isEmpty())
-        assertFalse(fixture.partial.exists())
-        assertFalse(fixture.options.outputDir.exists())
-        assertArrayEquals(checkpoint, options.checkpoint.readBytes())
-        assertArrayEquals(invalidBytes, lora.readBytes())
-
-        assertEquals(ConversionStatus.Succeeded, ConversionRequest(fixture.options).run().status)
-        val published = fixture.outputFile.readBytes()
-        val existing = ConversionRequest(options).run()
-        assertEquals(ConversionStatus.Failed, existing.status)
-        assertEquals(ConversionErrorCode.OUTPUT_EXISTS, existing.errorCode)
-        assertTrue(existing.files.isEmpty())
-        assertArrayEquals(published, fixture.outputFile.readBytes())
-        assertFalse(fixture.partial.exists())
     }
 
     @Test
@@ -99,8 +67,6 @@ class ConverterAndroidTest {
             val result = request.run { progress ->
                 if (progress.stage == ConversionStage.Finalizing) {
                     caller.submit { request.requestCancel() }.get(10, TimeUnit.SECONDS)
-                    assertTrue(fixture.partial.isDirectory)
-                    assertFalse(fixture.options.outputDir.exists())
                 }
             }
             assertEquals(ConversionStatus.Cancelled, result.status)
@@ -150,23 +116,11 @@ class ConverterAndroidTest {
     }
 
     @Test
-    fun staleOutputRequiresOwnershipBeforeCleanup() = withFixture { fixture ->
+    fun mapsCleanupResultThroughJni() = withFixture { fixture ->
+        assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
         assertTrue(fixture.partial.mkdir())
-        val foreign = fixture.partial.resolve("keep.txt").apply { writeText("caller file") }
-        val result = ConversionRequest(fixture.options).run()
-        assertEquals(ConversionStatus.Failed, result.status)
-        assertEquals(ConversionErrorCode.STALE_OUTPUT, result.errorCode)
+        fixture.partial.resolve("keep.txt").writeText("caller file")
         assertEquals(ConversionErrorCode.CLEANUP_FAILED, ConversionRequest.cleanupPartial(fixture.options.outputDir))
-        assertEquals("caller file", foreign.readText())
-
-        assertTrue(foreign.delete())
-        fixture.partial.resolve(".sd15-converter.json").writeText(
-            """{"format":"sd15-mnn-template","files":["model.mnn"]}""",
-        )
-        fixture.partial.resolve("model.mnn").writeText("staged")
-        assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
-        assertFalse(fixture.partial.exists())
-        assertEquals(ConversionErrorCode.NONE, ConversionRequest.cleanupPartial(fixture.options.outputDir))
     }
 
     private fun withFixture(test: (Fixture) -> Unit) {

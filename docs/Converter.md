@@ -67,6 +67,10 @@ WorkManager의 성공 상태, Room에 등록한 해시 및 실제 출력의 이�
 
 ## 검증 기록
 
+현재 앱 계측은 JNI의 경로·옵션·결과 전달, Kotlin 콜백 예외와 재진입, 교차 스레드 취소 및 네이티브 반환 뒤 자원 해제를 검증한다. Converter의 진행률 계산, 기존 출력 보존, 소유권 마커와 staging 정리 규칙은 [to-mnn Converter 테스트](../third_party/to-mnn/cpp/tests/converter/converter_test.cpp)에서 검증한다. 앱의 `cleanupPartial` 계측은 대표 성공·실패 코드 전달을 확인한다. WorkManager·Room·파일 상태 대조와 실제 APK 스모크는 앱 통합 검증으로 유지한다.
+
+2026-11-13 중복 검증 정리 후 Debug·계측 APK 빌드와 JVM 테스트 72개가 통과했다. Galaxy S20+ (SM-G986N, Android 13)의 `ConverterAndroidTest` 5개와 `ChatRuntimeAssetsTest` 2개가 통과했다.
+
 - Debug 빌드와 JVM 테스트 36개가 통과했다. lint는 오류 0개, 경고 34개를 보고했다. APK에서 ARM64 JNI 라이브러리와 `libc++_shared.so`의 패키징 및 16 KiB 정렬을 확인했다.
 - 2026-11-11 Galaxy S20+ (SM-G986N, Android 13/API 33)에서 기존 Android 계측 18개와 합성 Converter 계측 4개가 통과했다. 합성 테스트는 정확한 출력 바이트, 공개 시점, 진행 콜백, 교차 스레드 취소, 오류 및 잔여 출력 소유권을 확인한다.
 - 같은 기기의 Debug APK에서 기존 ADB 실험의 4,265,146,304바이트 SD 1.5 체크포인트와 `sd15-hqq-b128-manual` 템플릿으로 실제 변환을 1회 수행했다. 청크 1 MiB, HQQ 보정 20회, 계산 스레드 4개를 사용했고 파일 캐시 상태는 제어하지 않았다. ADB 계측 테스트와 Converter 경과 시간 428.056초를 기록했으며 `Completed`, 출력 파일 세 개의 이름·크기 및 `.partial` 부재를 확인했다. [기존 ADB 입력과 실행 조건](https://github.com/PocketMuse/to-mnn/blob/b5a06df6944cd8b6ff22048396281d04e926c7fe/docs/sd15-discussion.md#2026-11-08--s20-변환추론-검증), [재현 명령](../README.md#실제-hqq-모델-스모크)
