@@ -10,6 +10,7 @@ ksp {
 }
 
 val converterBenchmark = providers.gradleProperty("converterBenchmark").orNull
+val sd15RuntimeRoot = providers.gradleProperty("sd15RuntimeRoot").orNull?.let(rootProject::file)
 require(converterBenchmark == null || converterBenchmark in setOf("Debug", "Release", "RelWithDebInfo")) {
     "converterBenchmark must be Debug, Release or RelWithDebInfo"
 }
@@ -39,6 +40,10 @@ android {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"
                 targets += "pocketmuse_converter"
+                if (sd15RuntimeRoot != null) {
+                    arguments += "-DSD15_RUNTIME_ROOT=${sd15RuntimeRoot.invariantSeparatorsPath}"
+                    targets += "pocketmuse_runtime"
+                }
             }
         }
     }

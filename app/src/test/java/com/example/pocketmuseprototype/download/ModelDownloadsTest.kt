@@ -577,6 +577,41 @@ class ModelDownloadsTest {
         return store.all().single()
     }
 
+    @Test fun staticLcmOutputSurvivesDeleteUntilCancelledBorrowerFinishes() = runBlocking {
+        val downloads = downloads()
+        val model = downloadedFixture(downloads)
+        val directory = storage.conversionOutput(model.storageKey, checkNotNull(model.conversionWorkId))
+        check(directory.mkdirs())
+        val names = listOf("text_encoder.mnn", "unet.mnn", "vae_decoder.mnn")
+        val bytes = "MNN fixture"
+        val hash = MessageDigest.getInstance("SHA-256").digest(bytes.encodeToByteArray()).toHexString()
+        names.forEach { directory.resolve(it).writeText(bytes) }
+        val converted = model.copy(
+            conversionStatus = ModelConversionStatus.Converted,
+            conversionTemplateId = "sd15-hqq-b128-manual-v1",
+            conversionFiles = names.joinToString(",", "{", "}") { "\"$it\":${bytes.length}" },
+            conversionHashes = names.joinToString(",", "{", "}") { "\"$it\":\"$hash\"" }
+        )
+        store.update(converted)
+
+        val acquired = CompletableDeferred<File>()
+        val borrower = launch {
+            downloads.withStaticLcmOutput(converted.storageKey) { _, output ->
+                acquired.complete(output)
+                kotlinx.coroutines.awaitCancellation()
+            }
+        }
+        assertEquals(directory, withTimeout(5_000) { acquired.await() })
+        downloads.remove(converted)
+        downloads.reconcile()
+        assertEquals(DownloadStatus.Deleting, store.all().single().downloadStatus)
+        assertTrue(names.all { directory.resolve(it).isFile })
+
+        borrower.cancelAndJoin()
+        assertNull(store.find(converted.storageKey))
+        assertFalse(directory.exists())
+    }
+
     @Test fun unknownLengthReportsBytesAndDoesNotClaimHashVerification() = runBlocking {
         val downloads = downloads()
         body = { Buffer().write(checkpoint).asResponseBody(contentLength = -1) }

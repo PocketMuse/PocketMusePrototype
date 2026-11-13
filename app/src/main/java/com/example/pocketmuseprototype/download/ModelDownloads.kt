@@ -3,6 +3,7 @@ package com.example.pocketmuseprototype.download
 import android.database.sqlite.SQLiteFullException
 import android.util.Log
 import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
+import com.example.pocketmuseprototype.conversion.BundledHqqTemplate
 import com.example.pocketmuseprototype.conversion.ConversionErrorCode
 import com.example.pocketmuseprototype.conversion.ConversionOptions
 import com.example.pocketmuseprototype.conversion.ConversionProgress
@@ -80,6 +81,7 @@ internal class ModelDownloads(
     private val conversions = Mutex()
     private var active: Pair<String, Job>? = null
     private var convertingKey: String? = null
+    private var generatingKey: String? = null
     private var conversionRequest: ConversionRequest? = null
     private data class CheckedOutput(val timestamps: Map<String, FileTime>, val hashes: String)
 
@@ -133,7 +135,9 @@ internal class ModelDownloads(
                     val key = model.storageKey
                     val waitingForLcm = model.downloadStatus == DownloadStatus.Downloaded &&
                         model.conversionStatus == ModelConversionStatus.WaitingForLcm
-                    if (!waitingForLcm && (active?.first == key || convertingKey == key)) continue
+                    if (generatingKey == key || (!waitingForLcm && (active?.first == key || convertingKey == key))) {
+                        continue
+                    }
                     when (model.downloadStatus) {
                         DownloadStatus.Cancelling, DownloadStatus.Deleting -> deleteFiles(model)
                         DownloadStatus.Downloaded -> try {
@@ -327,6 +331,7 @@ internal class ModelDownloads(
     }
 
     private suspend fun deleteFiles(model: LibraryModel) {
+        if (generatingKey == model.storageKey) return
         try {
             storage.delete(model.storageKey)
         } catch (_: IOException) {
@@ -487,7 +492,9 @@ internal class ModelDownloads(
         }
         commands.withLock {
             // A delete or retry can win while a checksum is being read.
-            if (convertingKey == model.storageKey || store.find(model.storageKey) != model) return@withLock
+            if (convertingKey == model.storageKey || generatingKey == model.storageKey ||
+                store.find(model.storageKey) != model
+            ) return@withLock
             when {
                 hashes != null -> if (wasConverted) retireLegacyOutput(model) else converted(model, hashes)
                 error == "INTERRUPTED" -> {
@@ -509,6 +516,41 @@ internal class ModelDownloads(
     private suspend fun resetConversionProgress(model: LibraryModel): LibraryModel =
         model.copy(conversionStatus = ModelConversionStatus.Queued, conversionProgress = null)
             .also { if (it != model) store.update(it) }
+
+    /**
+     * Lends the verified output while holding the conversion lock. The worker callback must
+     * finish any native work before returning, including on cancellation.
+     */
+    suspend fun <T> withStaticLcmOutput(key: String, use: suspend (LibraryModel, File) -> T): T =
+        withContext(Dispatchers.IO) {
+            conversions.withLock {
+                val model = commands.withLock {
+                    val current = store.find(key) ?: error("No Library model for storage key $key")
+                    check(current.downloadStatus == DownloadStatus.Downloaded &&
+                        current.conversionStatus == ModelConversionStatus.Converted &&
+                        current.conversionRecipeId == STATIC_LCM_RECIPE
+                    ) { "Library model $key has no completed static LCM output" }
+                    generatingKey = key
+                    current
+                }
+                try {
+                    val expected = model.conversionFiles?.let(::decodeOutputFiles)
+                    check(expected?.keys == SD15_RUNTIME_FILES &&
+                        model.conversionTemplateId == BundledHqqTemplate.ID && model.conversionHashes != null &&
+                        checkOutput(model) != null
+                    ) { "Invalid static LCM output for $key" }
+                    use(model, storage.conversionOutput(key, checkNotNull(model.conversionWorkId)))
+                } finally {
+                    withContext(NonCancellable) {
+                        commands.withLock {
+                            generatingKey = null
+                            val current = store.find(key)
+                            if (current?.downloadStatus == DownloadStatus.Deleting) deleteFiles(current)
+                        }
+                    }
+                }
+            }
+        }
 
     suspend fun runConversion(
         key: String,
@@ -777,3 +819,4 @@ internal class ModelDownloads(
 internal class ConversionFailure(val code: String) : IOException()
 
 private const val PROGRESS_INTERVAL_NS = 500_000_000L
+private val SD15_RUNTIME_FILES = setOf("text_encoder.mnn", "unet.mnn", "vae_decoder.mnn")

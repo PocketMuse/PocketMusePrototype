@@ -18,6 +18,60 @@ git submodule update --init third_party/to-mnn
 
 계측 테스트에는 연결된 ARM64 기기가 필요하다. 합성 Converter 테스트는 앱 캐시에 체크포인트와 템플릿을 만든다. [모델 다운로드와 Library](docs/Model-Downloads.md)
 
+## 실제 정적 LCM 추론 스모크
+
+기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 기기에 설치된 앱과 빌드 소스의 Room 스키마 버전 및 APK 서명이 일치해야 한다. 이 저장소의 `main`은 Room v3이다. Room v4 기기는 v4가 포함된 앱 소스에 Runtime 변경을 적용해 빌드한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
+
+Windows Git Bash에서 고정된 `third_party/to-mnn` 체크아웃을 준비한다. `VCPKG_ROOT`, Visual Studio C++ 도구, Ninja 및 위와 동일한 NDK의 `ANDROID_NDK_HOME`이 필요하다.
+
+```bash
+git submodule update --init third_party/to-mnn
+cd third_party/to-mnn
+uv python install 3.12
+uv sync --locked
+bash scripts/sd15.sh --prepare-tokenizer
+bash scripts/build-android.sh
+```
+
+앱 프로젝트 루트의 PowerShell에서 실행한다. `$nativeRoot`는 동일한 고정 리비전으로 빌드한 별도 체크아웃의 경로로도 지정할 수 있다. `$key`는 기기 Library에 등록된 ToonYou의 `modelVersionId_fileId`로 설정한다. 여러 기기가 연결되어 있다면 `ANDROID_SERIAL`로 대상을 지정한다.
+
+```powershell
+$nativeRoot = (Resolve-Path 'third_party/to-mnn').Path
+$key = '125771_90840'
+$pkg = 'com.example.pocketmuseprototype'
+$runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+$class = "$pkg.runtime.StaticLcmSmokeTest"
+.\gradlew.bat "-Psd15RuntimeRoot=$nativeRoot" :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+adb shell run-as $pkg mkdir -p files/runtime-smoke/tokenizer
+foreach ($name in 'vocab.json','merges.txt') {
+    $stage = "/data/local/tmp/pocketmuse-runtime-$([Guid]::NewGuid().ToString('N'))"
+    adb push (Join-Path $nativeRoot "artifacts/sd15/tokenizer/$name") $stage
+    if ($LASTEXITCODE -ne 0) { throw "Tokenizer upload failed" }
+    try {
+        adb shell "run-as $pkg sh -c 'cat $stage > files/runtime-smoke/tokenizer/$name'"
+        if ($LASTEXITCODE -ne 0) { throw "Tokenizer copy failed" }
+    } finally {
+        adb shell rm $stage
+    }
+}
+
+adb shell am instrument -w -r -e class "$class#generatesAndDecodesPng" -e staticLcmSmoke true -e storageKey $key $runner
+adb logcat -d -s StaticLcmSmoke:I
+```
+
+`png=` 로그의 `runtime-smoke/results/…png` 경로를 사용해 회수한다. 아래 리디렉션은 PowerShell 7.4 이상에서 바이너리를 보존한다.
+
+```powershell
+$relativePng = 'runtime-smoke/results/<filename>.png'
+adb exec-out run-as $pkg cat "files/$relativePng" > toon-you-static-lcm.png
+
+adb shell am instrument -w -r -e class "$class#reportsInitializationErrorAndPreCancellation" -e runtimeContract true $runner
+adb shell am instrument -w -r -e class "$class#propagatesCallbackFailureAndCancelsAfterFirstDenoisingStep" -e staticLcmCancelSmoke true -e storageKey $key $runner
+```
+
 ## 실제 HQQ 모델 스모크
 
 로컬에 이미 준비한 SD 1.5 safetensors와 호환되는 HQQ 템플릿을 사용한다. `adb`가 여러 기기를 감지하면 `ANDROID_SERIAL`로 테스트 기기를 선택한다. Gradle의 기본 계측 실행은 종료할 때 테스트 앱과 대상 앱을 제거할 수 있으므로, 모델 입력을 준비한 뒤에는 스모크를 ADB로 직접 실행한다.
