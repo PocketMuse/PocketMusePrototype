@@ -14,6 +14,11 @@ val converterOnly = providers.gradleProperty("converterOnly").map(String::toBool
 val runtimeFixture = providers.gradleProperty("runtimeFixture").map(String::toBooleanStrict).getOrElse(false)
 val runtimeRootOverride = providers.gradleProperty("sd15RuntimeRoot").orNull
 val sd15RuntimeRoot = rootProject.file(runtimeRootOverride ?: "third_party/to-mnn")
+val releaseKeystore = providers.environmentVariable("POCKETMUSE_RELEASE_KEYSTORE").orNull
+val releasePassword = providers.environmentVariable("POCKETMUSE_RELEASE_PASSWORD").orNull
+require((releaseKeystore == null) == (releasePassword == null)) {
+    "Set both POCKETMUSE_RELEASE_KEYSTORE and POCKETMUSE_RELEASE_PASSWORD to sign the release"
+}
 require(!converterOnly || (runtimeRootOverride == null && !runtimeFixture)) {
     "converterOnly cannot be combined with sd15RuntimeRoot or runtimeFixture"
 }
@@ -37,8 +42,8 @@ android {
         applicationId = "com.example.pocketmuseprototype"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -65,6 +70,17 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null && releasePassword != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = releasePassword
+                keyAlias = "pocketmuse"
+                keyPassword = releasePassword
+            }
+        }
+    }
+
     buildTypes {
         if (runtimeFixture) {
             debug { applicationIdSuffix = ".runtimefixture" }
@@ -80,6 +96,7 @@ android {
             }
         }
         release {
+            signingConfig = signingConfigs.findByName("release")
             optimization {
                 enable = false
             }

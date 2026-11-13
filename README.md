@@ -20,6 +20,27 @@ git submodule update --init third_party/to-mnn
 
 계측 테스트에는 연결된 ARM64 기기가 필요하다. 테스트 종료 후 기존 설치가 제거될 수 있으므로, 모델이 저장된 기기에서는 아래의 `adb install -r`과 `am instrument`를 사용한다. [모델 다운로드와 Library](docs/Model-Downloads.md)
 
+## 배포 APK 서명
+
+GitHub에 배포할 APK는 전용 키로 서명한다. `POCKETMUSE_RELEASE_KEYSTORE`와 `POCKETMUSE_RELEASE_PASSWORD`를 모두 설정하면 `assembleRelease`가 `app-release.apk`를 생성한다. 키 alias는 `pocketmuse`다. 환경 변수가 없으면 개발용 미서명 `app-release-unsigned.apk`가 생성되며 설치용으로 배포할 수 없다.
+
+현재 Windows 배포 키는 사용자 홈의 `.android/PocketMuseRelease/release.jks`에 있고, 비밀번호는 같은 디렉터리의 `password.dpapi`에 Windows 사용자 계정으로 암호화되어 있다. 동일한 Windows 계정에서 다음 명령을 실행한다. 서명 비밀번호가 구성 캐시에 저장되지 않도록 캐시를 끈다.
+
+```powershell
+$signingDirectory = Join-Path $env:USERPROFILE '.android/PocketMuseRelease'
+$env:POCKETMUSE_RELEASE_KEYSTORE = Join-Path $signingDirectory 'release.jks'
+$secret = Get-Content (Join-Path $signingDirectory 'password.dpapi') | ConvertTo-SecureString
+$env:POCKETMUSE_RELEASE_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
+try {
+    .\gradlew.bat --no-configuration-cache :app:assembleRelease
+    if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+} finally {
+    Remove-Item Env:POCKETMUSE_RELEASE_KEYSTORE, Env:POCKETMUSE_RELEASE_PASSWORD
+}
+```
+
+업데이트 APK에는 같은 키를 사용한다. 키와 복구 가능한 비밀번호를 별도 안전한 장소에 백업해야 하며, DPAPI 파일은 원래 Windows 계정·환경에 의존한다. 키와 비밀번호를 Git에 저장하지 않는다. Debug 서명으로 설치한 개발용 앱은 배포 키와 서명이 달라 직접 업데이트할 수 없다.
+
 ## Runtime 빌드 준비
 
 Windows Git Bash에서 고정된 `third_party/to-mnn` 체크아웃을 준비한다. `VCPKG_ROOT`, Visual Studio C++ 도구, CMake·Ninja 및 앱과 동일한 NDK의 `ANDROID_NDK_HOME`이 필요하다. 기존 to-mnn 스크립트로 검증된 MNN 엔진을 빌드한다.
