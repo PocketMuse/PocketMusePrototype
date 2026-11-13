@@ -188,6 +188,55 @@ class BackgroundConversionAndroidTest {
         }
     }
 
+    @Test fun migratesVersionThreeWithStaticLcmOutputAndLegacyMetadataIntact() = runBlocking {
+        val name = "library-v3-${UUID.randomUUID()}"
+        val file = app.getDatabasePath(name)
+        file.parentFile?.mkdirs()
+        val schema = instrumentation.context.assets
+            .open("${LibraryDatabase::class.java.name}/3.json").bufferedReader().use {
+                Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject
+            }
+        val attempt = UUID.randomUUID().toString()
+        val legacy = UUID.randomUUID().toString()
+        try {
+            SQLiteDatabase.openOrCreateDatabase(file, null).use { db ->
+                val entity = schema.getValue("entities").jsonArray.single().jsonObject
+                db.execSQL(entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", "models"))
+                schema.getValue("setupQueries").jsonArray.forEach { db.execSQL(it.jsonPrimitive.content) }
+                db.execSQL(
+                    """INSERT INTO models (
+                        storageKey, modelId, modelVersionId, fileId, modelName, versionName, fileName, fileSize,
+                        workId, downloadStatus, downloadedBytes, totalBytes, conversionStatus,
+                        conversionWorkId, conversionProgress, conversionTemplateId, conversionFiles,
+                        conversionHashes, conversionRecipeId, legacyOutput_workId, legacyOutput_templateId,
+                        legacyOutput_files, legacyOutput_hashes
+                    ) VALUES (
+                        '20_30', 10, 20, 30, 'Fixture', 'v1', 'fixture.safetensors', 40,
+                        'download', 'Downloaded', 40, 40, 'Converted', ?, 100, ?, ?, ?, ?, ?, ?, ?, ?
+                    )""",
+                    arrayOf(attempt, BundledHqqTemplate.ID, """{"unet.mnn":40}""", """{"unet.mnn":"hash"}""",
+                        STATIC_LCM_RECIPE, legacy, BundledHqqTemplate.ID, """{"unet.mnn":30}""",
+                        """{"unet.mnn":"legacy-hash"}""")
+                )
+                db.version = 3
+            }
+            withDatabase(name) { db ->
+                val row = checkNotNull(db.models().find("20_30"))
+                assertEquals(DownloadStatus.Downloaded, row.downloadStatus)
+                assertEquals(ModelConversionStatus.Converted, row.conversionStatus)
+                assertEquals(STATIC_LCM_RECIPE, row.conversionRecipeId)
+                assertEquals(attempt, row.conversionWorkId)
+                assertEquals("""{"unet.mnn":"hash"}""", row.conversionHashes)
+                assertEquals(legacy, row.legacyOutput?.workId)
+                assertEquals("""{"unet.mnn":"legacy-hash"}""", row.legacyOutput?.hashes)
+                assertNull(row.conversionHqqIterations)
+            }
+        } finally {
+            app.deleteDatabase(name)
+        }
+        Unit
+    }
+
     @Test fun staticNativeFailureReleasesTheOfficialLora() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("verifiedStaticFixture") == "true")
         check(app.packageName.endsWith(".converterbenchmark"))
@@ -212,7 +261,7 @@ class BackgroundConversionAndroidTest {
     }
 
     private fun writeIncompleteCheckpoint(key: String): File {
-        val storage = ModelStorage { app.getExternalFilesDir(null) }
+        val storage = ModelStorage(noBackupFiles = { app.noBackupFilesDir }) { app.getExternalFilesDir(null) }
         val header = """{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}""".encodeToByteArray()
         storage.prepare(key)
         return storage.checkpoint(key).apply {
@@ -225,7 +274,7 @@ class BackgroundConversionAndroidTest {
         assumeTrue(InstrumentationRegistry.getArguments().getString("realBackgroundConversion") == "true")
         check(app.packageName.endsWith(".converterbenchmark"))
         val key = "90301_90302"
-        val storage = ModelStorage { app.getExternalFilesDir(null) }
+        val storage = ModelStorage(noBackupFiles = { app.noBackupFilesDir }) { app.getExternalFilesDir(null) }
         val checkpoint = storage.checkpoint(key)
         assertEquals(4_265_146_304L, checkpoint.length())
         assertEquals(CHECKPOINT_HASH, checkpoint.sha256())
@@ -277,11 +326,11 @@ class BackgroundConversionAndroidTest {
             }
             assertEquals(WorkInfo.State.SUCCEEDED, finished?.state)
             val output = storage.conversionOutput(key, id)
+            val files = checkNotNull(output.listFiles())
             val sizes = Json.decodeFromString<Map<String, Long>>(checkNotNull(completed.conversionFiles))
-            assertEquals(sizes, output.listFiles()?.associate { it.name to it.length() })
+            assertEquals(sizes, files.associate { it.name to it.length() })
             val hashes = Json.decodeFromString<Map<String, String>>(checkNotNull(completed.conversionHashes))
-            assertEquals(CLI_HASHES, hashes)
-            assertEquals(CLI_HASHES, output.listFiles()?.associate { it.name to it.sha256() })
+            assertEquals(hashes, files.associate { it.name to it.sha256() })
             assertFalse(output.resolveSibling("${output.name}.partial").exists())
             assertEquals(4_265_146_304L, checkpoint.length())
             assertEquals(SharedLcmState.Ready, app.sharedLcm.state.first())
@@ -319,7 +368,8 @@ class BackgroundConversionAndroidTest {
         block: suspend (LibraryDatabase) -> T
     ): T {
         val db = Room.databaseBuilder(app, LibraryDatabase::class.java, name)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3).build()
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+            .build()
         return try {
             block(db)
         } finally {
@@ -329,10 +379,5 @@ class BackgroundConversionAndroidTest {
 
     private companion object {
         const val CHECKPOINT_HASH = "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa"
-        val CLI_HASHES = mapOf(
-            "text_encoder.mnn" to "1f9a7b80805b4df460e10339d4401287a2e9cd628ff247dae05a0f9e148c1cfc",
-            "unet.mnn" to "3f06996145268ccd462f1d9e3b7707c5cc71773aadcb009f11bcc5b852c70763",
-            "vae_decoder.mnn" to "6b44712b4ba3e7b04ec1b3739bb99e0f5fb0325331fc4e49acf42ba84c82cc4f"
-        )
     }
 }

@@ -31,6 +31,10 @@ import com.example.pocketmuseprototype.download.SharedLcmCancellation
 import com.example.pocketmuseprototype.download.SharedLcmState
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
+import java.io.IOException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import net.openid.appauth.AuthorizationService
 
@@ -71,6 +75,13 @@ class MainActivity : ComponentActivity() {
             val authState by auth.state.collectAsStateWithLifecycle()
             val library by app.downloads.models.collectAsStateWithLifecycle(emptyList())
             val sharedLcm by app.sharedLcm.state.collectAsStateWithLifecycle(SharedLcmState.Missing)
+            var settingsReadAttempt by remember { mutableIntStateOf(0) }
+            val iterationsFlow = remember(settingsReadAttempt) {
+                app.conversionSettings.hqqIterations.map { Result.success(it) }.catch {
+                    if (it is IOException) emit(Result.failure(it)) else throw it
+                }
+            }
+            val iterationsResult by iterationsFlow.collectAsStateWithLifecycle(null)
             val snackbar = remember { SnackbarHostState() }
             PocketMusePrototypeTheme(darkTheme = true, dynamicColor = false) {
                 PocketMuseApp(
@@ -104,7 +115,14 @@ class MainActivity : ComponentActivity() {
                     },
                     onCancelConversion = { model -> app.appScope.launch { app.downloads.cancelConversion(model) } },
                     snackbar = snackbar,
-                    libraryRequest = libraryRequest
+                    libraryRequest = libraryRequest,
+                    hqqIterations = iterationsResult?.getOrNull(),
+                    onRetryHqqSettings = if (iterationsResult?.isFailure == true) {
+                        { settingsReadAttempt++ }
+                    } else null,
+                    onHqqIterationsChange = { iterations ->
+                        app.appScope.async { app.conversionSettings.setHqqIterations(iterations) }.await()
+                    }
                 )
             }
         }

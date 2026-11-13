@@ -5,9 +5,13 @@ import androidx.annotation.WorkerThread
 import java.io.File
 import java.nio.charset.CharacterCodingException
 
+internal const val DEFAULT_HQQ_ITERATIONS = 0
+
 /**
  * Inputs use absolute filesystem paths. The template contains graph.bin and manifest.json.
  *
+ * @property hqqIterations Runtime HQQ refinement passes. The app defaults to min/max quantization
+ * with zero refinement passes. The template recipe stays fixed.
  * @property lcmLora The official SD1.5 LCM-LoRA safetensors file to merge into a compatible
  * HQQ B128 template. The Converter validates the file. Null selects standard conversion.
  */
@@ -16,7 +20,7 @@ data class ConversionOptions(
     val templateDir: File,
     val outputDir: File,
     val chunkBytes: Int = 1024 * 1024,
-    val hqqIterations: Int = 20,
+    val hqqIterations: Int = DEFAULT_HQQ_ITERATIONS,
     val threadCount: Int = 1,
     val lcmLora: File? = null,
 )

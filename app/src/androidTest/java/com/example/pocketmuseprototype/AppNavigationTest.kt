@@ -11,6 +11,9 @@ import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -134,27 +137,80 @@ class AppNavigationTest {
         ) { page(1..1) }
 
         compose.onNodeWithText("Library").performClick()
+        compose.onNodeWithText("최적화 필요", substring = true).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_convert)).performClick()
-        compose.onNodeWithText(string(R.string.library_delete)).assertIsEnabled()
-        val cancelConversion = string(R.string.library_cancel_conversion, downloaded.modelName)
-        compose.onNode(hasContentDescription(cancelConversion) and SemanticsMatcher.expectValue(
+        compose.onNodeWithText(string(R.string.library_delete)).assertDoesNotExist()
+        val optimizationActions = string(R.string.library_optimization_actions, downloaded.modelName)
+        compose.onNode(hasContentDescription(optimizationActions) and SemanticsMatcher.expectValue(
             SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
         )).assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("변환 대기 중").assertDoesNotExist()
+        compose.onNodeWithText("최적화 대기 중", substring = true).assertIsDisplayed()
         compose.runOnIdle {
             model.value = model.value.copy(conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
         }
-        compose.onNode(hasContentDescription(cancelConversion) and SemanticsMatcher.expectValue(
+        compose.onNodeWithText("최적화 37%", substring = true).assertIsDisplayed()
+        compose.onNode(hasContentDescription(optimizationActions) and SemanticsMatcher.expectValue(
             SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(0.37f, 0f..1f)
         )).performClick()
         compose.runOnIdle { check(model.value.conversionStatus == ModelConversionStatus.Converting) }
         compose.onNodeWithText(string(R.string.library_dismiss_confirmation)).performClick()
-        compose.onNodeWithContentDescription(cancelConversion).performClick()
-        compose.onNodeWithText(string(R.string.library_cancel_conversion_question)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(optimizationActions).performClick()
+        compose.onNodeWithText(string(R.string.library_delete_model)).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).performClick()
-        compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
+        compose.onNodeWithText("최적화 필요", substring = true).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_delete)).assertIsEnabled()
         compose.onNodeWithText(string(R.string.library_convert_retry)).performClick()
-        compose.onNodeWithText(string(R.string.library_converted)).assertIsDisplayed()
+        compose.onNodeWithText("최적화 필요", substring = true).assertDoesNotExist()
+        compose.onNodeWithText(string(R.string.library_convert)).assertDoesNotExist()
+        compose.onNodeWithText("최적화 완료", substring = true).assertDoesNotExist()
+        compose.onNodeWithText(string(R.string.library_delete)).assertIsEnabled()
+    }
+
+    @Test
+    fun libraryDeletesAnOptimizingModelThroughTheActionDialog() {
+        val active = LibraryModel("1_1", 1, 1, 1, "Checkpoint 1", "Version 1", "fixture.safetensors",
+            100_000_000L, null, null, "fixture", DownloadStatus.Downloaded,
+            conversionStatus = ModelConversionStatus.Converting, conversionProgress = 37)
+        val model = mutableStateOf<LibraryModel?>(active)
+        launchApp(
+            library = { listOfNotNull(model.value?.let { LibraryItem(it, null) }) },
+            onRemove = {
+                check(it == active)
+                model.value = null
+            },
+            onCancelConversion = { error("Delete must remove the model") }
+        ) { page(1..1) }
+
+        compose.onNodeWithText("Library").performClick()
+        compose.onNodeWithContentDescription(string(R.string.library_optimization_actions, active.modelName)).performClick()
+        compose.onNode(hasText(string(R.string.library_delete_model)) and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithText(active.modelName).assertDoesNotExist()
+    }
+
+    @Test
+    fun openOptimizationDialogUsesTheLatestModelStateAfterCompletion() {
+        val active = LibraryModel("1_1", 1, 1, 1, "Checkpoint 1", "Version 1", "fixture.safetensors",
+            100_000_000L, null, null, "fixture", DownloadStatus.Downloaded,
+            conversionStatus = ModelConversionStatus.Converting, conversionWorkId = "optimization")
+        val model = mutableStateOf<LibraryModel?>(active)
+        launchApp(
+            library = { listOfNotNull(model.value?.let { LibraryItem(it, null) }) },
+            onRemove = {
+                check(it.conversionStatus == ModelConversionStatus.Converted)
+                model.value = null
+            },
+            onCancelConversion = { error("A completed optimization cannot be cancelled") }
+        ) { page(1..1) }
+
+        compose.onNodeWithText("Library").performClick()
+        compose.onNodeWithContentDescription(string(R.string.library_optimization_actions, active.modelName)).performClick()
+        compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).assertIsDisplayed()
+        compose.runOnIdle {
+            model.value = active.copy(conversionStatus = ModelConversionStatus.Converted, conversionRecipeId = STATIC_LCM_RECIPE)
+        }
+        compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).assertDoesNotExist()
+        compose.onNode(hasText(string(R.string.library_delete_model)) and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithText(active.modelName).assertDoesNotExist()
     }
 
     @Test
@@ -173,13 +229,13 @@ class AppNavigationTest {
         ) { page(1..1) }
 
         compose.onNodeWithText("Library").performClick()
-        compose.onNodeWithText(string(R.string.library_converted_legacy)).assertIsDisplayed()
-        compose.onNodeWithText(string(R.string.library_convert_static_lcm)).performClick()
-        compose.onNodeWithText(string(R.string.library_conversion_waiting_lcm)).assertIsDisplayed()
+        compose.onNodeWithText("최적화 필요", substring = true).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.library_convert)).performClick()
+        compose.onNodeWithText(string(R.string.library_conversion_waiting_lcm), substring = true).assertIsDisplayed()
         compose.onNodeWithText(string(R.string.library_lcm_download)).assertIsEnabled()
-        compose.onNodeWithContentDescription(string(R.string.library_cancel_conversion, legacy.modelName)).performClick()
+        compose.onNodeWithContentDescription(string(R.string.library_optimization_actions, legacy.modelName)).performClick()
         compose.onNodeWithText(string(R.string.library_confirm_cancel_conversion)).performClick()
-        compose.onNodeWithText(string(R.string.library_conversion_cancelled)).assertIsDisplayed()
+        compose.onNodeWithText("최적화 필요", substring = true).assertIsDisplayed()
     }
 
     @Test

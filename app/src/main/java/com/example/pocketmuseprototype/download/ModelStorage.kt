@@ -17,6 +17,7 @@ import java.util.UUID
 
 /** App-owned paths shared by the download and conversion workers. */
 internal class ModelStorage(
+    private val noBackupFiles: () -> File,
     private val cleanupPartial: (File) -> ConversionErrorCode = ConversionRequest.Companion::cleanupPartial,
     private val externalFiles: () -> File?
 ) {
@@ -34,6 +35,12 @@ internal class ModelStorage(
     fun conversionOutput(key: String, id: String): File {
         require(UUID.fromString(id).toString() == id)
         return safeChild(convertedDirectory(key), id)
+    }
+
+    /** Resolves the cache path without creating it. Runtime owns creation and file access. */
+    fun openClCacheDirectory(key: String, id: String): File? {
+        require(UUID.fromString(id).toString() == id)
+        return accessCache { safeChild(modelCacheDirectory(key), id) }
     }
 
     fun hasCheckpoint(key: String, bytes: Long): Boolean {
@@ -73,6 +80,7 @@ internal class ModelStorage(
         }
         if (cleanup != ConversionErrorCode.NONE) throw IOException("Converter staging cleanup failed: $cleanup")
         deleteTree(path.toFile())
+        accessCache { deleteTree(modelCacheDirectory(key)) }
     }
 
     fun cleanupStaging(output: File): ConversionErrorCode {
@@ -116,6 +124,15 @@ internal class ModelStorage(
     /** A final directory under this attempt ID is app-owned. Staging belongs to the Converter. */
     fun discardConversion(key: String, id: String) {
         deleteTree(conversionOutput(key, id))
+        accessCache { openClCacheDirectory(key, id)?.let(::deleteTree) }
+    }
+
+    private inline fun <T> accessCache(action: () -> T): T? = try {
+        action()
+    } catch (_: IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
     }
 
     private fun deleteTree(file: File) {
@@ -136,6 +153,11 @@ internal class ModelStorage(
 
     private fun convertedDirectory(key: String): File = safeChild(directory(key), "converted")
     private fun sourceDirectory(key: String): File = safeChild(directory(key), "source")
+
+    private fun modelCacheDirectory(key: String): File {
+        require(key.matches(storageKeyPattern))
+        return safeChild(safeChild(noBackupFiles(), "opencl-cache"), key)
+    }
 
     private fun directory(key: String): File {
         require(key.matches(storageKeyPattern))

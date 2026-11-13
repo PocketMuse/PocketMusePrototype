@@ -80,7 +80,8 @@ internal data class LibraryModel(
     val conversionFiles: String? = null,
     val conversionHashes: String? = null,
     val conversionRecipeId: String? = null,
-    @Embedded(prefix = "legacyOutput_") val legacyOutput: LegacyOutput? = null
+    @Embedded(prefix = "legacyOutput_") val legacyOutput: LegacyOutput? = null,
+    val conversionHqqIterations: Int? = null
 ) {
     val canStartConversion: Boolean
         get() = conversionStatus.canStart ||
@@ -117,7 +118,7 @@ internal interface LibraryDao : LibraryStore {
     override suspend fun delete(model: LibraryModel)
 }
 
-@Database(entities = [LibraryModel::class], version = 3)
+@Database(entities = [LibraryModel::class], version = 4)
 internal abstract class LibraryDatabase : RoomDatabase() {
     abstract fun models(): LibraryDao
 
@@ -142,6 +143,11 @@ internal abstract class LibraryDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_files TEXT")
                 db.execSQL("ALTER TABLE models ADD COLUMN legacyOutput_hashes TEXT")
                 db.execSQL("UPDATE models SET conversionRecipeId = 'sd15-hqq-b128-v1' WHERE conversionWorkId IS NOT NULL")
+            }
+        }
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN conversionHqqIterations INTEGER")
             }
         }
     }

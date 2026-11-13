@@ -10,8 +10,15 @@ import android.graphics.BitmapFactory
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.pocketmuseprototype.download.DownloadNotifications
@@ -26,6 +33,7 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -43,6 +51,32 @@ class LibraryAndroidTest {
         library.assertIsSelected()
         compose.onNodeWithText(compose.activity.getString(R.string.library_downloads)).assertIsDisplayed()
     }
+
+    @Test fun drawerSavesHqqIterationsAcrossActivityRecreation() = runBlocking<Unit> {
+        val activity = compose.activity
+        val settings = (activity.application as PocketMuseApplication).conversionSettings
+        val initial = settings.hqqIterations.first()
+        val menu = activity.getString(R.string.open_menu)
+        val label = activity.getString(R.string.conversion_hqq_iterations)
+        try {
+            compose.onNodeWithContentDescription(menu).performClick()
+            val slider = compose.onNodeWithContentDescription(label)
+            if (initial != 5) {
+                slider.performSemanticsAction(SemanticsActions.SetProgress) { check(it(5f)) }
+            }
+            withTimeout(5_000) { settings.hqqIterations.first { it == 5 } }
+            slider.performSemanticsAction(SemanticsActions.SetProgress) { check(it(15f)) }
+            withTimeout(5_000) { settings.hqqIterations.first { it == 15 } }
+            compose.activityRule.scenario.recreate()
+            val drawerTitle = compose.onNodeWithText(activity.getString(R.string.conversion_settings_title))
+            if (!drawerTitle.isDisplayed()) compose.onNodeWithContentDescription(menu).performClick()
+            slider.assert(SemanticsMatcher.expectValue(
+                SemanticsProperties.StateDescription, activity.getString(R.string.conversion_hqq_count, 15)
+            ))
+        } finally {
+            settings.setHqqIterations(initial)
+        }
+    }
 }
 
 class LibraryStorageAndroidTest {
@@ -53,7 +87,7 @@ class LibraryStorageAndroidTest {
     @Test fun roomPersistsModelAndAppSpecificStorageRemovesOnlyItsFiles() = runBlocking(Dispatchers.IO) {
         val name = "library-test-${UUID.randomUUID()}"
         val base = File(checkNotNull(context.getExternalFilesDir(null)), name)
-        val storage = ModelStorage { base }
+        val storage = ModelStorage(noBackupFiles = { File(context.noBackupFilesDir, name) }) { base }
         val other = "21_31"
         fun database() = Room.databaseBuilder(context, LibraryDatabase::class.java, name).build()
         try {
