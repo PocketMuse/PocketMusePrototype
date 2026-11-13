@@ -826,12 +826,44 @@ class ModelDownloadsTest {
         assertTrue(store.all().isEmpty())
     }
 
-    private fun downloads(template: () -> HqqTemplate = { throw IOException("No template for download tests") }): ModelDownloads {
+    @Test
+    fun conversionKeepsItsDownloadCompletionSettingUntilExplicitRetry() = runBlocking {
+        loraStorage.removeFinal()
+        var iterations = 0
+        val downloads = downloads(iterations = { iterations })
+        val model = enqueue(downloads)
+        iterations = 15
+        run(downloads, model)
+        val waiting = checkNotNull(store.find(model.storageKey))
+        assertEquals(ModelConversionStatus.WaitingForLcm, waiting.conversionStatus)
+        assertEquals(15, waiting.conversionHqqIterations)
+
+        iterations = 5
+        publishLora()
+        downloads.reconcile()
+        val queued = checkNotNull(store.find(model.storageKey))
+        assertEquals(ModelConversionStatus.Queued, queued.conversionStatus)
+        assertEquals(15, queued.conversionHqqIterations)
+
+        loraStorage.removeFinal()
+        downloads.runConversion(model.storageKey, checkNotNull(queued.conversionWorkId), {}, {})
+        val recovered = checkNotNull(store.find(model.storageKey))
+        assertEquals(ModelConversionStatus.WaitingForLcm, recovered.conversionStatus)
+        assertEquals(15, recovered.conversionHqqIterations)
+        downloads.cancelConversion(recovered)
+        assertTrue(downloads.startConversion(checkNotNull(store.find(model.storageKey))))
+        assertEquals(5, store.find(model.storageKey)?.conversionHqqIterations)
+    }
+
+    private fun downloads(
+        iterations: suspend () -> Int = { 0 },
+        template: () -> HqqTemplate = { throw IOException("No template for download tests") }
+    ): ModelDownloads {
         val client = OkHttpClient.Builder().eventListener(listener).addInterceptor(::intercept).build()
         return ModelDownloads(
             store, storage, scheduler, { token ?: throw DownloadFailure(DownloadError.AuthRequired) },
             CivitaiTransfer(client) { time.also { time += 600 } }, { _, _ -> error("Image request should fail") },
-            conversions, template, shared
+            conversions, template, shared, iterations
         )
     }
 

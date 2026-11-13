@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -87,7 +88,10 @@ internal fun PocketMuseApp(
     onStartConversion: (LibraryModel) -> Unit = {},
     onCancelConversion: (LibraryModel) -> Unit = {},
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
-    libraryRequest: Int = 0
+    libraryRequest: Int = 0,
+    hqqIterations: Int? = null,
+    onRetryHqqSettings: (() -> Unit)? = null,
+    onHqqIterationsChange: suspend (Int) -> Unit = {}
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     var draft by rememberSaveable { mutableStateOf("") }
@@ -110,7 +114,14 @@ internal fun PocketMuseApp(
                 drawerState = drawerState,
                 modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(0.8f).fillMaxHeight(),
                 drawerContainerColor = colors.surfaceContainer
-            ) {}
+            ) {
+                val drawerSemantics = if (drawerState.isClosed && !drawerState.isAnimationRunning) {
+                    Modifier.clearAndSetSemantics {}
+                } else Modifier
+                Box(drawerSemantics) {
+                    ConversionSettingsContent(hqqIterations, onRetryHqqSettings, onHqqIterationsChange)
+                }
+            }
         }
     ) {
         Surface(modifier = Modifier.fillMaxSize(), color = colors.background) {

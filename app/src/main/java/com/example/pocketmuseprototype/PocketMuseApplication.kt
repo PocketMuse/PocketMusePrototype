@@ -9,6 +9,7 @@ import com.example.pocketmuseprototype.auth.AuthManager
 import com.example.pocketmuseprototype.auth.AuthState
 import com.example.pocketmuseprototype.auth.KeystoreSessionStore
 import com.example.pocketmuseprototype.conversion.BundledHqqTemplate
+import com.example.pocketmuseprototype.conversion.ConversionSettings
 import com.example.pocketmuseprototype.download.CivitaiTransfer
 import com.example.pocketmuseprototype.download.DownloadError
 import com.example.pocketmuseprototype.download.DownloadFailure
@@ -42,12 +43,13 @@ class PocketMuseApplication : Application() {
     }
     private val downloadScheduler by lazy { WorkManagerDownloads(WorkManager.getInstance(this)) }
     private val conversionScheduler by lazy { WorkManagerConversions(WorkManager.getInstance(this)) }
+    internal val conversionSettings by lazy { ConversionSettings(this) }
     internal val sharedLcm by lazy {
         SharedLcmDownloads(SharedLcmStorage(noBackupFilesDir), WorkManagerSharedLcm(WorkManager.getInstance(this)))
     }
     internal val downloads by lazy {
         val library = Room.databaseBuilder(this, LibraryDatabase::class.java, LibraryDatabase.NAME)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3)
+            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
             .build()
         ModelDownloads(
             library.models(),
@@ -68,7 +70,8 @@ class PocketMuseApplication : Application() {
             ::writeWebpThumbnail,
             conversionScheduler,
             BundledHqqTemplate(this)::load,
-            sharedLcm
+            sharedLcm,
+            defaultHqqIterations = { conversionSettings.hqqIterations.first() }
         )
     }
 

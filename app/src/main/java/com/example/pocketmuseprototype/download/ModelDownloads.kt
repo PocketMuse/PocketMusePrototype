@@ -6,6 +6,7 @@ import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.conversion.BundledHqqTemplate
 import com.example.pocketmuseprototype.conversion.ConversionErrorCode
 import com.example.pocketmuseprototype.conversion.ConversionOptions
+import com.example.pocketmuseprototype.conversion.DEFAULT_HQQ_ITERATIONS
 import com.example.pocketmuseprototype.conversion.ConversionProgress
 import com.example.pocketmuseprototype.conversion.ConversionRequest
 import com.example.pocketmuseprototype.conversion.ConversionResult
@@ -63,7 +64,8 @@ internal class ModelDownloads(
     private val writeThumbnail: (ByteArray, File) -> Unit,
     private val conversionScheduler: ModelWorkScheduler,
     private val template: () -> HqqTemplate,
-    private val sharedLcm: SharedLcmDownloads
+    private val sharedLcm: SharedLcmDownloads,
+    private val defaultHqqIterations: suspend () -> Int
 ) {
     val models = store.observe().map { models ->
         models.map { model ->
@@ -350,7 +352,14 @@ internal class ModelDownloads(
 
     private suspend fun complete(model: LibraryModel) {
         val bytes = checkNotNull(model.totalBytes)
-        startStaticConversion(model.copy(downloadStatus = DownloadStatus.Downloaded, fileSize = bytes))
+        val downloaded = model.copy(downloadStatus = DownloadStatus.Downloaded, fileSize = bytes)
+        val iterations = try {
+            readHqqIterations()
+        } catch (failure: ConversionFailure) {
+            conversionFailed(downloaded, failure.code)
+            return
+        }
+        startStaticConversion(downloaded, iterations)
     }
 
     private suspend fun reset(model: LibraryModel): LibraryModel =
@@ -370,6 +379,7 @@ internal class ModelDownloads(
             ) return@withLock false
             try {
                 if (!published(current)) throw ConversionFailure("SOURCE_INVALID")
+                val iterations = readHqqIterations()
                 if (current.conversionStatus == ModelConversionStatus.Converted) {
                     val legacy = LegacyOutput(
                         current.conversionWorkId ?: return@withLock false,
@@ -377,10 +387,10 @@ internal class ModelDownloads(
                         current.conversionFiles ?: return@withLock false,
                         current.conversionHashes ?: return@withLock false
                     )
-                    startStaticConversion(current.copy(legacyOutput = legacy))
+                    startStaticConversion(current.copy(legacyOutput = legacy), iterations)
                 } else {
                     current.conversionWorkId?.let { storage.discardConversion(current.storageKey, it) }
-                    startStaticConversion(current)
+                    startStaticConversion(current, iterations)
                 }
                 true
             } catch (failure: ConversionFailure) {
@@ -415,17 +425,24 @@ internal class ModelDownloads(
         }
     }
 
-    private suspend fun startStaticConversion(model: LibraryModel) {
-        val waiting = waitForLcm(model)
+    private suspend fun readHqqIterations(): Int = try {
+        defaultHqqIterations()
+    } catch (_: IOException) {
+        throw ConversionFailure("SETTINGS_UNAVAILABLE")
+    }
+
+    private suspend fun startStaticConversion(model: LibraryModel, iterations: Int) {
+        val waiting = waitForLcm(model, iterations)
         if (sharedLcm.isReady()) scheduleConversion(resetConversionProgress(waiting))
     }
 
-    private suspend fun waitForLcm(model: LibraryModel): LibraryModel {
+    private suspend fun waitForLcm(model: LibraryModel, iterations: Int): LibraryModel {
         model.conversionWorkId?.let(checkedOutputs::remove)
         val waiting = model.copy(
             conversionStatus = ModelConversionStatus.WaitingForLcm,
             conversionWorkId = UUID.randomUUID().toString(),
             conversionRecipeId = STATIC_LCM_RECIPE,
+            conversionHqqIterations = iterations,
             conversionProgress = null,
             conversionErrorCode = null,
             conversionTemplateId = null,
@@ -475,7 +492,7 @@ internal class ModelDownloads(
     private suspend fun scheduleUnregistered(model: LibraryModel) {
         if (model.conversionRecipeId == STATIC_LCM_RECIPE && !sharedLcm.isReady()) {
             storage.discardConversion(model.storageKey, checkNotNull(model.conversionWorkId))
-            waitForLcm(model)
+            waitForLcm(model, model.conversionHqqIterations ?: DEFAULT_HQQ_ITERATIONS)
         } else {
             scheduleConversion(resetConversionProgress(model))
         }
@@ -642,15 +659,19 @@ internal class ModelDownloads(
         if (retiredCleanup != ConversionErrorCode.NONE) throw ConversionFailure(retiredCleanup.name)
         if (parent.usableSpace < hqq.files.values.sum()) throw ConversionFailure("INSUFFICIENT_SPACE")
         val files = Json.encodeToString(hqq.files)
+        val iterations = model.conversionHqqIterations ?: DEFAULT_HQQ_ITERATIONS
         suspend fun execute(lora: File?) {
             val request = ConversionRequest(
-                ConversionOptions(checkpoint, hqq.directory, output, threadCount = 4, lcmLora = lora)
+                ConversionOptions(
+                    checkpoint, hqq.directory, output,
+                    hqqIterations = iterations, threadCount = 4, lcmLora = lora
+                )
             )
             // This metadata binds any native publication at this path to the attempt's durable recipe.
             commands.withLock {
                 val current = pendingConversion(key, id) ?: return
                 store.update(current.copy(conversionTemplateId = hqq.id, conversionFiles = files,
-                    conversionErrorCode = null))
+                    conversionHqqIterations = iterations, conversionErrorCode = null))
                 conversionRequest = request
             }
             checkNativeResult(runNative(request) { progress -> updateConversionProgress(key, id, progress, notification) }, hqq)
@@ -680,7 +701,7 @@ internal class ModelDownloads(
             val current = pendingConversion(key, id) ?: return@withLock
             storage.discardConversion(key, id)
             // The Ready event can arrive between a failed lease acquisition and this state update.
-            startStaticConversion(current)
+            startStaticConversion(current, current.conversionHqqIterations ?: DEFAULT_HQQ_ITERATIONS)
         }
     }
 
@@ -712,7 +733,8 @@ internal class ModelDownloads(
             ConversionStatus.Succeeded -> Unit
         }
         if (result.files.associate { it.name to it.sizeBytes } != hqq.files) throw ConversionFailure("OUTPUT_INVALID")
-        Log.d("ModelConversion", "Native conversion: ${result.elapsedMillis} ms, HQQ: ${result.hqqComputeMillis} ms")
+        Log.d("ModelConversion", "Native conversion: ${result.elapsedMillis} ms, " +
+            "HQQ: ${result.hqqComputeMillis} ms (${result.hqqIterations} iterations)")
     }
 
     private suspend fun runNative(request: ConversionRequest, publish: suspend (ConversionProgress) -> Unit) =
