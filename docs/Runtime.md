@@ -34,6 +34,9 @@ Debug 앱·계측 APK 빌드, JVM 테스트 72개, `lintDebug`, 실기기 대상
 
 ## Checkpoints
 
+- Runtime 스모크는 앱이 전달한 캐시 경로의 사용과 취소·삭제 중 파일 수명을 확인한다. 캐시 파일의 구성과 이름은 to-mnn이 관리한다. PNG 회수는 제품의 `GeneratedImage.toBitmap()`을 사용하며, 채널·행 순서의 독립 기대값은 `ChatRuntimeAssetsTest`에서 검증한다.
+- 2026-11-13 위 정리 후 Galaxy S20+ (SM-G986N, Android 13)에서 기존 ToonYou (`125771_90840`)와 Warm 테스트 캐시를 사용한 `generatesAndDecodesPng` 1회가 통과했다. 변경된 캐시 경로 검사와 제품 Bitmap 변환을 거친 PNG 저장·디코딩을 확인했다. Cold 실행과 격리 모델 삭제 스모크는 이번에 재실행하지 않았다.
+
 - TAESD는 체크포인트와 독립적인 공용 APK 자산이다. Stage 2에서는 프리뷰가 필요한 요청 전에 `BundledTaesd.prepare(context)`를 호출하고, 반환된 파일의 `absolutePath`를 `RuntimeOptions.preview_decoder_path`에 전달한다. Runtime은 첫 프리뷰 스텝에서 모델을 로딩하므로 호출자는 `generate()`가 반환될 때까지 파일을 유지한다. [to-mnn 프리뷰 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
 - `prepare()`는 I/O 디스패처에서 프로세스 내 호출을 직렬화한다. 앱 전용 `noBackupFilesDir/taesd/taesd.mnn`의 ASCII 절대 경로와 파일 크기·SHA-256을 확인한다. 누락되거나 손상된 파일은 같은 디렉터리의 `taesd.mnn.partial`에 복사하고 검증한 뒤 원자적으로 교체한다. 이전에 남은 임시 파일은 다음 호출에서 정리하며, 설치에 실패하면 `IOException`을 전달한다. 대기 중인 호출은 취소할 수 있고, 이미 시작된 복사는 검증과 정리까지 끝날 수 있다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [Android ATOMIC_MOVE](https://developer.android.com/reference/java/nio/file/StandardCopyOption#ATOMIC_MOVE)
 - OpenCL 디스크 캐시는 기본 활성화된다. `noBackupFilesDir/opencl-cache/{storageKey}/{conversionWorkId}`를 JNI에서 `RuntimeOptions.cache_dir`로 전달한다. 같은 변환 UUID는 프로세스가 바뀌어도 같은 경로를 쓴다. `to-mnn`이 CLIP·UNet·VAE 실행 중 캐시를 열고 세션 해제까지 기록하며, 모델·엔진·실행 프로필에 따라 내부 파일을 구분한다. 캐시 경로를 사용할 수 없거나 파일 접근·잠금이 실패하면 Runtime은 디스크 캐시 없이 실행한다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [to-mnn 캐시 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
