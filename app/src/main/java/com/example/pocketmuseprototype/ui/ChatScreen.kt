@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
@@ -28,6 +29,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -493,7 +495,7 @@ private fun ChatGenerationProgress(
             )
         }
         Column(
-            modifier = Modifier.align(if (preview == null) Alignment.Center else Alignment.BottomCenter)
+            modifier = Modifier.align(Alignment.BottomCenter)
                 .fillMaxWidth().background(background).padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -504,11 +506,19 @@ private fun ChatGenerationProgress(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (total > 0) {
-                if (preview == null) Text(stringResource(message, step, total))
+            if (preview == null && total == 0 &&
+                message != R.string.chat_finishing_image && message != R.string.chat_saving_image
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(stringResource(message), style = MaterialTheme.typography.labelMedium)
+                }
+            } else if (total > 0) {
                 LinearProgressIndicator({ step.toFloat() / total }, Modifier.fillMaxWidth())
             } else {
-                Text(stringResource(message))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         }

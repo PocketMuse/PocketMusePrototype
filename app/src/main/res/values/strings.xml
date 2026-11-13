@@ -22,9 +22,9 @@
     <string name="chat_close_steps">스텝 선택 닫기</string>
     <string name="chat_step_count">%1$d 스텝</string>
     <string name="chat_generation_unavailable">이 앱에서 이미지 생성 기능을 사용할 수 없어요.</string>
-    <string name="chat_preparing">이미지 생성 준비 중</string>
-    <string name="chat_encoding_prompt">프롬프트 처리 중</string>
-    <string name="chat_generating">이미지 생성 중</string>
+    <string name="chat_preparing">모델 로딩 중</string>
+    <string name="chat_encoding_prompt">모델 로딩 중</string>
+    <string name="chat_generating">모델 로딩 중</string>
     <string name="chat_denoising">이미지 생성 %1$d/%2$d</string>
     <string name="chat_finishing_image">이미지 마무리 중</string>
     <string name="chat_cancel_generation">생성 취소</string>
