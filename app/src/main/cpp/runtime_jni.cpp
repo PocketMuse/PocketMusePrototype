@@ -50,6 +50,32 @@ std::string read_path(JNIEnv* env, jstring value) {
     return path;
 }
 
+jbyteArray copy_rgb(JNIEnv* env, const sd15::Image& image) {
+    constexpr auto size = sd15::kImageSize;
+    if (image.width != size || image.height != size || image.rgb.size() != size * size * 3) {
+        throw std::runtime_error("Unexpected Runtime RGB8 dimensions");
+    }
+    const auto count = static_cast<jsize>(image.rgb.size());
+    auto rgb = env->NewByteArray(count);
+    if (!rgb) throw PendingJavaException{};
+    env->SetByteArrayRegion(rgb, 0, count, reinterpret_cast<const jbyte*>(image.rgb.data()));
+    if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(rgb);
+        throw PendingJavaException{};
+    }
+    return rgb;
+}
+
+jmethodID callback_method(JNIEnv* env, jobject callback, const char* signature) {
+    if (!callback) return nullptr;
+    jclass type = env->GetObjectClass(callback);
+    if (!type) throw PendingJavaException{};
+    jmethodID update = env->GetMethodID(type, "update", signature);
+    env->DeleteLocalRef(type);
+    if (!update) throw PendingJavaException{};
+    return update;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -72,7 +98,8 @@ Java_com_example_pocketmuseprototype_runtime_NativeRuntime_destroyToken(JNIEnv*,
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_pocketmuseprototype_runtime_NativeRuntime_generate(
         JNIEnv* env, jobject, jlong handle, jstring model_dir, jstring tokenizer_dir,
-        jstring cache_dir, jint steps, jbyteArray prompt, jobject callback) {
+        jstring cache_dir, jstring preview_decoder, jint steps, jlong seed, jbyteArray prompt,
+        jobject progress_callback, jobject preview_callback) {
     const char* failure_type = "com/example/pocketmuseprototype/runtime/RuntimeInitializationException";
     try {
         auto& token = *token_at(handle);
@@ -88,12 +115,15 @@ Java_com_example_pocketmuseprototype_runtime_NativeRuntime_generate(
         config.model_dir = read_path(env, model_dir);
         config.tokenizer_dir = read_path(env, tokenizer_dir);
         config.cache_dir = read_path(env, cache_dir);
+        config.preview_decoder_path = read_path(env, preview_decoder);
         const auto runtime_start = Clock::now();
         sd15::Sd15Runtime runtime(config);
         const jlong runtime_nanos = elapsed_nanos(runtime_start);
         failure_type = "com/example/pocketmuseprototype/runtime/RuntimeGenerationException";
 
         sd15::GenerateOptions request(sd15::SamplingPreset::Lcm, steps, 1.0f);
+        request.seed = seed;
+        request.preview_interval = preview_callback ? 1 : 0;
         const auto prompt_size = env->GetArrayLength(prompt);
         request.prompt.resize(static_cast<size_t>(prompt_size));
         if (prompt_size != 0) {
@@ -101,38 +131,35 @@ Java_com_example_pocketmuseprototype_runtime_NativeRuntime_generate(
             if (env->ExceptionCheck()) throw PendingJavaException{};
         }
 
-        jmethodID update = nullptr;
-        if (callback) {
-            jclass callback_class = env->GetObjectClass(callback);
-            if (!callback_class) return nullptr;
-            update = env->GetMethodID(callback_class, "update", "(Ljava/lang/String;IIJ)V");
-            if (!update) return nullptr;
-        }
+        const auto update_progress = callback_method(env, progress_callback, "(Ljava/lang/String;IIJ)V");
+        const auto update_preview = callback_method(env, preview_callback, "(IIII[BJ)V");
         Clock::time_point generate_start;
         sd15::InferenceProgress progress;
-        if (update) {
+        if (update_progress) {
             progress = [&](const std::string& stage, int step, int total) {
                 const jlong elapsed = elapsed_nanos(generate_start);
                 jstring name = env->NewStringUTF(stage.c_str());
                 if (!name) throw PendingJavaException{};
-                env->CallVoidMethod(callback, update, name, step, total, elapsed);
+                env->CallVoidMethod(progress_callback, update_progress, name, step, total, elapsed);
                 env->DeleteLocalRef(name);
                 if (env->ExceptionCheck()) throw PendingJavaException{};
             };
         }
-        generate_start = Clock::now();
-        const auto image = runtime.generate(request, token, progress);
-        const jlong generate_nanos = elapsed_nanos(generate_start);
-        constexpr auto size = sd15::kImageSize;
-        if (image.width != size || image.height != size || image.rgb.size() != size * size * 3) {
-            throw std::runtime_error("Unexpected Runtime RGB8 dimensions");
+        sd15::InferencePreview preview;
+        if (update_preview) {
+            preview = [&](int step, int total, const sd15::Image& image) {
+                const jlong elapsed = elapsed_nanos(generate_start);
+                auto rgb = copy_rgb(env, image);
+                env->CallVoidMethod(preview_callback, update_preview, step, total,
+                                    image.width, image.height, rgb, elapsed);
+                env->DeleteLocalRef(rgb);
+                if (env->ExceptionCheck()) throw PendingJavaException{};
+            };
         }
-
-        auto rgb = env->NewByteArray(static_cast<jsize>(image.rgb.size()));
-        if (!rgb) return nullptr;
-        env->SetByteArrayRegion(rgb, 0, static_cast<jsize>(image.rgb.size()),
-                                reinterpret_cast<const jbyte*>(image.rgb.data()));
-        if (env->ExceptionCheck()) return nullptr;
+        generate_start = Clock::now();
+        const auto image = runtime.generate(request, token, progress, preview);
+        const jlong generate_nanos = elapsed_nanos(generate_start);
+        auto rgb = copy_rgb(env, image);
         jclass result = env->FindClass("com/example/pocketmuseprototype/runtime/GeneratedImage");
         if (!result) return nullptr;
         jmethodID constructor = env->GetMethodID(result, "<init>", "(JII[BJJ)V");

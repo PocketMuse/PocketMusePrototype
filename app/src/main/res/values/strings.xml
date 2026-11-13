@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">PocketMusePrototype</string>
+    <string name="chat_empty_brand" translatable="false">PocketMuse</string>
     <string name="tab_chat">Chat</string>
     <string name="tab_market">Market</string>
     <string name="tab_models">Library</string>
@@ -22,9 +23,9 @@
     <string name="chat_close_steps">스텝 선택 닫기</string>
     <string name="chat_step_count">%1$d 스텝</string>
     <string name="chat_generation_unavailable">이 앱에서 이미지 생성 기능을 사용할 수 없어요.</string>
-    <string name="chat_preparing">이미지 생성 준비 중</string>
-    <string name="chat_encoding_prompt">프롬프트 처리 중</string>
-    <string name="chat_generating">이미지 생성 중</string>
+    <string name="chat_preparing">모델 로딩 중</string>
+    <string name="chat_encoding_prompt">모델 로딩 중</string>
+    <string name="chat_generating">모델 로딩 중</string>
     <string name="chat_denoising">이미지 생성 %1$d/%2$d</string>
     <string name="chat_finishing_image">이미지 마무리 중</string>
     <string name="chat_cancel_generation">생성 취소</string>
@@ -35,6 +36,7 @@
     <string name="chat_generation_memory_error">메모리가 부족해 이미지를 생성하지 못했어요.</string>
     <string name="chat_prompt_too_long">프롬프트가 너무 길어요. 내용을 줄여 주세요.</string>
     <string name="chat_generated_image">생성된 이미지</string>
+    <string name="chat_image_preview">이미지 미리보기 %1$d/%2$d</string>
     <string name="market_text">Text</string>
     <string name="market_image">Image</string>
     <string name="market_download">Download</string>

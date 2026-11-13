@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.getOrNull
 import androidx.test.platform.app.InstrumentationRegistry
@@ -56,9 +57,10 @@ class ChatGenerationAndroidTest {
         promptField.performTextInput("a small fox in a moonlit garden")
         send.performClick()
         try {
-            awaitText(string(R.string.chat_denoising, 1, 2))
+            awaitPreview(1, 2)
             cancel.performClick()
             awaitText(string(R.string.chat_generation_cancelled))
+            compose.onNodeWithText(string(R.string.chat_image_preview, 1, 2)).assertDoesNotExist()
         } finally {
             if (compose.onAllNodes(hasContentDescription(string(R.string.chat_cancel_generation)))
                     .fetchSemanticsNodes().isNotEmpty()) cancel.performClick()
@@ -72,15 +74,26 @@ class ChatGenerationAndroidTest {
         promptField.performTextInput(prompt)
         val start = SystemClock.elapsedRealtime()
         send.performClick()
-        compose.onNodeWithText(string(R.string.tab_models)).performClick()
-        compose.activityRule.scenario.recreate()
-        compose.onNodeWithText(string(R.string.tab_chat)).performClick()
         try {
+            awaitPreview(1, 4)
+            println("Chat displayed its first preview in ${SystemClock.elapsedRealtime() - start} ms")
+            compose.onNodeWithText(string(R.string.tab_models)).performClick()
+            compose.activityRule.scenario.recreate()
+            compose.onNodeWithText(string(R.string.tab_chat)).performClick()
+            awaitPreview(4, 4)
+            compose.waitUntil(300_000) {
+                compose.onAllNodes(SemanticsMatcher.expectValue(
+                    SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate
+                )).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(string(R.string.chat_finishing_image)).assertDoesNotExist()
+            compose.onNodeWithText(string(R.string.chat_image_preview, 4, 4)).assertIsDisplayed()
             val description = string(R.string.chat_generated_image)
             compose.waitUntil(300_000) {
                 compose.onAllNodes(hasContentDescription(description)).fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithContentDescription(description).assertIsDisplayed()
+            compose.onNodeWithText(string(R.string.chat_image_preview, 4, 4)).assertDoesNotExist()
             val saved = runBlocking(Dispatchers.IO) {
                 app.gallery.gallery.first().single { it.record.id !in existingIds }
             }
@@ -114,6 +127,12 @@ class ChatGenerationAndroidTest {
     }
 
     private fun awaitText(text: String) = compose.waitUntil(300_000) { compose.hasTextNode(text) }
+
+    private fun awaitPreview(step: Int, total: Int) {
+        val label = string(R.string.chat_image_preview, step, total)
+        awaitText(label)
+        compose.onNodeWithText(label).assertIsDisplayed()
+    }
 
     private fun SemanticsNodeInteractionsProvider.hasTextNode(text: String): Boolean =
         onAllNodes(hasText(text)).fetchSemanticsNodes().isNotEmpty()

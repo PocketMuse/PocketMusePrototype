@@ -3,7 +3,7 @@
 ## Chat 이미지 생성
 
 - 기존 Chat에서 최적화된 정적 LCM 모델을 선택하고 프롬프트를 전송한다. Activity 범위 `ImageGenerationViewModel`은 모델 키·이름, 스텝, 프롬프트를 확보하고 한 번에 요청 하나를 실행한다. 프롬프트와 진행·완료·실패·취소 메시지는 ViewModel에 순서대로 쌓인다. 탭 이동, 백그라운드 진입, ViewModel이 유지되는 Activity 재생성 뒤에도 세션이 유지된다. Activity가 종료되면 생성 중인 작업을 취소하고, 새 프로세스의 Chat은 빈 목록으로 시작한다. [Android ViewModel 수명](https://developer.android.com/topic/libraries/architecture/viewmodel#lifecycle)
-- 스텝은 2·4·6·8이며 기본값은 4다. LCM, guidance 1.0, 512×512, OpenCL Buffer, Low 정밀도, Fast 튜닝, Low Memory와 영속 디스크 캐시를 사용한다. Negative prompt는 비우고 동적 LoRA와 프리뷰는 비활성화한다. `GenerateOptions`의 기본 seed `-1`로 Runtime이 매 요청의 seed를 정한다. [to-mnn 생성 요청 계약](../third_party/to-mnn/docs/cpp/public-api.md#생성-요청)
+- 스텝은 2·4·6·8이며 기본값은 4다. LCM, guidance 1.0, 512×512, OpenCL Buffer, Low 정밀도, Fast 튜닝, Low Memory와 영속 디스크 캐시를 사용한다. Negative prompt는 비우고 동적 LoRA는 비활성화한다. 검증된 공용 TAESD 파일을 준비하면 매 스텝 프리뷰를 요청한다. Chat은 seed `-1`로 Runtime에 seed 선택을 맡긴다. [to-mnn 생성 요청 계약](../third_party/to-mnn/docs/cpp/public-api.md#생성-요청)
 - APK에 포함된 SD1.5 CLIP `vocab.json`과 `merges.txt`는 생성 전에 `noBackupFilesDir/sd15-tokenizer/`에 준비한다. SHA-256이 맞으면 재사용하고, 누락되거나 손상된 파일은 임시 파일에 복사하고 검증한 뒤 원자적으로 교체한다. 두 파일이 검증된 뒤 앱 전용 디렉터리 경로를 JNI에 전달한다. [고정 리비전의 Tokenizer 원본](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/tree/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/tokenizer)
 - Chat은 전송한 프롬프트를 오른쪽 말풍선에 표시하고 입력창을 비운다. 이미지와 진행 상태는 왼쪽 응답 영역에 표시한다. CLIP·UNet 준비·VAE 구간은 단계별 상태로, denoising 구간은 콜백의 `step`과 `total`로 표시한다. 우하단 전송 버튼은 생성 중 정지 버튼으로 바뀐다. 취소를 누르면 코루틴을 취소하고 JNI와 모델 대여가 정리될 때까지 버튼을 비활성화한다. 모델을 사용할 수 없으면 Library에서 상태를 확인하도록 안내한다.
 - HWC RGB8을 작업 스레드에서 Bitmap으로 변환한 뒤 Gallery에 저장한다. Chat의 완료 메시지는 파일 참조를 보관하고 Coil이 표시 크기에 맞춰 디코딩한다. 저장에 실패하면 Chat에 오류와 이미지를 표시할 수 있으며 다음 요청에서 그 Bitmap 참조를 해제한다. 메시지 추가 시 최신 항목으로 이동하고, 이전 메시지를 읽는 중에는 진행률 변경이 스크롤을 이동시키지 않는다. [Compose 지연 목록](https://developer.android.com/develop/ui/compose/lists) · [Coil AsyncImage](https://coil-kt.github.io/coil/compose/)
@@ -37,12 +37,58 @@ Debug 앱·계측 APK 빌드, JVM 테스트 72개, `lintDebug`, 실기기 대상
 - Runtime 스모크는 앱이 전달한 캐시 경로의 사용과 취소·삭제 중 파일 수명을 확인한다. 캐시 파일의 구성과 이름은 to-mnn이 관리한다. PNG 회수는 제품의 `GeneratedImage.toBitmap()`을 사용하며, 채널·행 순서의 독립 기대값은 `ChatRuntimeAssetsTest`에서 검증한다.
 - 2026-11-13 위 정리 후 Galaxy S20+ (SM-G986N, Android 13)에서 기존 ToonYou (`125771_90840`)와 Warm 테스트 캐시를 사용한 `generatesAndDecodesPng` 1회가 통과했다. 변경된 캐시 경로 검사와 제품 Bitmap 변환을 거친 PNG 저장·디코딩을 확인했다. Cold 실행과 격리 모델 삭제 스모크는 이번에 재실행하지 않았다.
 
-- TAESD는 체크포인트와 독립적인 공용 APK 자산이다. Stage 2에서는 프리뷰가 필요한 요청 전에 `BundledTaesd.prepare(context)`를 호출하고, 반환된 파일의 `absolutePath`를 `RuntimeOptions.preview_decoder_path`에 전달한다. Runtime은 첫 프리뷰 스텝에서 모델을 로딩하므로 호출자는 `generate()`가 반환될 때까지 파일을 유지한다. [to-mnn 프리뷰 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
+- TAESD는 체크포인트와 독립적인 공용 APK 자산이다. Chat은 요청마다 `BundledTaesd.prepare(context)`로 확인한 파일의 절대 경로를 `RuntimeOptions.preview_decoder_path`에 전달한다. Runtime은 첫 프리뷰 스텝에서 모델을 로딩하므로 호출자는 `generate()`가 반환될 때까지 파일을 유지한다. [to-mnn 프리뷰 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
 - `prepare()`는 I/O 디스패처에서 프로세스 내 호출을 직렬화한다. 앱 전용 `noBackupFilesDir/taesd/taesd.mnn`의 ASCII 절대 경로와 파일 크기·SHA-256을 확인한다. 누락되거나 손상된 파일은 같은 디렉터리의 `taesd.mnn.partial`에 복사하고 검증한 뒤 원자적으로 교체한다. 이전에 남은 임시 파일은 다음 호출에서 정리하며, 설치에 실패하면 `IOException`을 전달한다. 대기 중인 호출은 취소할 수 있고, 이미 시작된 복사는 검증과 정리까지 끝날 수 있다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [Android ATOMIC_MOVE](https://developer.android.com/reference/java/nio/file/StandardCopyOption#ATOMIC_MOVE)
 - OpenCL 디스크 캐시는 기본 활성화된다. `noBackupFilesDir/opencl-cache/{storageKey}/{conversionWorkId}`를 JNI에서 `RuntimeOptions.cache_dir`로 전달한다. 같은 변환 UUID는 프로세스가 바뀌어도 같은 경로를 쓴다. `to-mnn`이 CLIP·UNet·VAE 실행 중 캐시를 열고 세션 해제까지 기록하며, 모델·엔진·실행 프로필에 따라 내부 파일을 구분한다. 캐시 경로를 사용할 수 없거나 파일 접근·잠금이 실패하면 Runtime은 디스크 캐시 없이 실행한다. [Android noBackupFilesDir](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir()) · [to-mnn 캐시 계약](../third_party/to-mnn/docs/cpp/public-api.md#설정과-배포-자원)
 - 모델 삭제 시 해당 `storageKey`의 캐시를 정리한다. 변환 출력 폐기 시 해당 작업 UUID의 캐시만 정리하며, 새 변환에는 새 UUID를 사용한다. 캐시 정리는 가능한 범위에서 수행한다. 강제 종료나 I/O 오류로 남은 캐시는 해당 UUID에 격리된다.
 - Android 12 이상에서 앱이 기기의 공개 OpenCL 드라이버를 사용할 수 있도록 `libOpenCL.so`를 선택적으로 선언한다. Runtime은 CLIP·UNet·VAE에서 OpenCL 장치 텐서와 동기화 경계를 검사하고 CPU fallback을 거부한다. 고정 MNN `cda4a6f`를 같은 NDK와 OpenCL 설정으로 다시 링크했다. Debug·Release·격리 APK의 ARM64 공유 라이브러리 6개 모두에서 ELF LOAD 정렬 `0x4000`과 `zipalign -c -P 16 4` 통과를 확인했다. 연결된 S20+의 페이지 크기는 4096바이트이며 16 KiB 실행 환경은 확보하지 못했다. [Android 벤더 라이브러리](https://developer.android.com/guide/topics/manifest/uses-native-library-element) · [Android 페이지 크기 지원](https://developer.android.com/guide/practices/page-sizes) · [Runtime 검증 근거](../third_party/to-mnn/docs/cpp/runtime.md#checkpoints)
 - 타이밍은 단조 시계를 사용한다. 공개 진행 콜백은 모델 로딩 직전과 각 denoising 스텝 완료 시점에 온다. CLIP 구간은 CLIP 진입부터 UNet 진입까지, UNet 첫 구간은 모델 로딩·튜닝과 첫 스텝을 포함한다. 마지막 스텝부터 VAE 진입까지는 UNet 정리 구간이다. 총시간에는 모델·Tokenizer 확인, Runtime 생성, RGB 전달, PNG 저장 및 디코딩이 포함된다. 앱 PSS는 전후 표본이다. [진행 이벤트 계약](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
+
+## TAESD 실시간 프리뷰
+
+- TAESD 파일과 `GenerationPreview` 콜백을 함께 제공하면 JNI는 `preview_interval = 1`을 설정한다. Runtime은 denoising 진행 이벤트 직후 clean prediction을 TAESD로 디코딩한다. TAESD는 UNet 구간에서 로딩·재사용되고 최종 VAE 전에 해제된다. 모델별 기존 OpenCL 캐시 경로에 Runtime이 별도 `preview-*.mnnc` 파일을 관리한다. [to-mnn 실행 순서와 세션 수명](../third_party/to-mnn/cpp/runtime/src/runtime.cpp)
+- 콜백은 JNI를 호출한 I/O 작업 스레드에서 순차 실행된다. Kotlin은 1부터 시작하는 스텝 번호, 전체 스텝 수, 너비·높이, 소유권이 있는 512×512 HWC RGB8 `ByteArray`와 생성 시작 기준 경과 시간을 받는다. JNI는 콜백 동안만 유효한 C++ 픽셀을 한 번 복사하고 콜백 뒤 로컬 참조를 해제한다. Kotlin은 같은 작업 스레드에서 최종 이미지와 동일한 RGB 변환을 사용한다. [Android JNI 참조와 배열](https://developer.android.com/training/articles/perf-jni)
+- ViewModel은 현재 요청의 더 최신 스텝만 반영한다. 진행 상태, VAE 디코딩 및 PNG 저장 중에도 최신 프리뷰를 유지한다. Chat은 기존 1:1 이미지 영역에서 프리뷰임을 표시하고, 완료 파일을 읽는 동안 화면에 이미 표시된 프리뷰를 잠깐 유지한다. 완료 메시지는 최종 파일 경로를 보관한다. Room과 Gallery PNG에는 최종 VAE 결과 한 장을 저장한다.
+- 준비 중 `IOException`이 발생하면 원인을 로그에 남기고 프리뷰 없이 생성한다. 네이티브 TAESD 로딩·실행 오류는 `RuntimeGenerationException`으로 처리하며, 콜백에서 발생한 JVM 예외는 정리 후 원본을 전달한다. 공개 Runtime 계약에는 디코딩·콜백 실패 후 같은 생성 요청을 이어가는 경로가 없다. 취소를 게시하면 늦은 프리뷰를 폐기하며, 네이티브 호출과 모델 대여가 종료된 뒤 취소 완료를 게시한다. 저장 실패 시에는 기존 최종 Bitmap과 오류를 표시한다. [to-mnn 콜백과 실행 종료](../third_party/to-mnn/docs/cpp/public-api.md#콜백과-실행-종료)
+
+### 실기기 재현
+
+변환된 ToonYou Beta 6가 등록된 ARM64 기기에서 [README의 빌드와 `adb install -r`](../README.md#실제-정적-lcm-추론-스모크) 절차 후 실행한다. `storageKey`와 `chatModelName`은 기기의 Library에 맞춘다. Runtime 테스트는 앱 번들 Tokenizer를 사용한다. Chat 계측은 최종 이미지 한 장을 Gallery에 남긴다.
+
+```powershell
+$pkg = 'com.example.pocketmuseprototype'
+$runner = "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+$smoke = "$pkg.runtime.StaticLcmSmokeTest"
+$cases = "$smoke#comparesFixedSeedWithAndWithoutFourTaesdPreviews,$smoke#cancelsFromTheFirstTaesdCallbackAndPreservesCallbackFailure"
+adb shell am instrument -w -r -e class $cases -e taesdSmoke true -e storageKey 125771_90840 $runner
+adb shell am instrument -w -r -e class "$pkg.runtime.ChatGenerationAndroidTest" -e chatModelName ToonYou $runner
+```
+
+### Galaxy S20+ 측정
+
+2026-11-13 Galaxy S20+ (SM-G986N, Android 13/API 33)에서 arm64 Debug APK, ToonYou Beta 6 (`125771_90840`), 프롬프트 `masterpiece, best quality, a cute cat`, seed 42, 정적 LCM 4스텝, guidance 1.0, OpenCL Buffer Low/Fast/Low Memory로 실행했다. 비교마다 기존 CLIP·UNet·VAE 캐시를 사용했다. 첫 비교에서는 TAESD 캐시를 생성했고, 두 번째 비교에서는 같은 캐시로 끔 1회와 켬 2회를 같은 프로세스에서 순서대로 실행했다. OS·드라이버 캐시와 발열은 제어하지 않았다.
+
+| TAESD 상태 | 요청 시작~JNI 결과 (초) | 첫 프리뷰 콜백 (초) | 스텝 1·2·3·4 프리뷰 구간 (초) | VAE 구간 (초) |
+| --- | ---: | ---: | --- | ---: |
+| 끔, 첫 비교 | 44.86 | | | 7.75 |
+| 켬, 프리뷰 캐시 생성 | 50.16 | 17.55 | 3.03 / 0.50 / 0.50 / 0.51 | 8.00 |
+| 끔, 재비교 | 45.71 | | | 8.21 |
+| 켬, 프리뷰 캐시 재사용 1 | 47.63 | 14.65 | 0.76 / 0.51 / 0.51 / 0.51 | 8.25 |
+| 켬, 프리뷰 캐시 재사용 2 | 47.80 | 14.90 | 0.77 / 0.51 / 0.51 / 0.51 | 8.19 |
+
+JNI 타이밍에는 모델·번들 파일 준비와 UI 표시·저장 시간이 빠져 있다. 프리뷰 구간은 denoising 알림에서 다음 프리뷰의 JNI 복사 직전까지이며 첫 스텝에 TAESD 세션 로딩과 튜닝을 포함한다. VAE 구간은 VAE 진입부터 Runtime의 결과 반환까지다. 프리뷰는 매 실행 1~4 순서로 786,432바이트씩 전달됐다. 재비교에서 연속 프레임의 RGB 해시는 서로 달랐고, 최종 RGB8의 SHA-256은 프리뷰를 켰을 때와 껐을 때 같았다. 첫 실행에서 만든 361,220바이트 `preview-*.mnnc`가 재실행 시작 시 이미 있었고 같은 이름과 크기로 유지됐다.
+
+| 재비교 | 앱 PSS 표본 최대 (KiB) | 앱 RSS 표본 최대 (KiB) | 종료 직후 `Debug.getPss()` (KiB) |
+| --- | ---: | ---: | ---: |
+| 끔 | 3,543,028 | 3,642,052 | 134,962 |
+| 켬 1 | 3,631,630 | 3,744,036 | 137,127 |
+| 켬 2 | 3,971,561 | 4,083,256 | 137,475 |
+
+호스트에서 약 2.2초 간격으로 `adb shell dumpsys meminfo -s com.example.pocketmuseprototype`를 호출했다. 표본 최대값은 샘플 간 할당을 놓칠 수 있고, 관측된 실행 간 편차가 있어 프리뷰 자체의 메모리 비용으로 환산할 수 없다. 4스텝 재비교는 각 실행 종료 후 약 132~134 MiB PSS로 내려왔다. 장시간 반복 생성과 다른 기기의 GPU·메모리 안정성은 확인하지 않았다.
+
+같은 기기에서 첫 프리뷰 콜백 안의 취소가 스텝 1에서 종료됐고 직후 PSS는 169,207 KiB였다. 콜백이 던진 JVM 예외의 동일성과 누락된 TAESD 경로의 Runtime 생성 오류를 확인했다. 디코더가 실행 도중 실패하는 GPU 오류는 주입하지 않았다. Chat 계측은 첫 프리뷰 표시 후 취소하고, 이어 4스텝 요청 중 Library 이동과 Activity 재생성을 거쳐 마지막 프리뷰와 최종 결과를 표시했다. Gallery에는 요청당 최종 512×512 PNG 한 장과 메타데이터가 추가됐다. 최종 UI 빌드의 Warm 표본은 전송부터 첫 프리뷰 표시까지 14.32초, Activity 재생성과 PNG 저장을 포함한 최종 표시까지 47.05초였다. 6·8스텝의 실제 콜백 횟수는 검증하지 않았다.
+
+Debug 앱·계측 APK 빌드, JVM 테스트 72개, `lintDebug` 및 대상 실기기 계측 16개가 통과했다. 실기기 계측은 JNI·TAESD, Tokenizer와 RGB 변환, 프리뷰 상태 수명과 저장 실패, Chat·Gallery 동작을 포함한다.
 
 ## TAESD 프리뷰 디코더 번들
 

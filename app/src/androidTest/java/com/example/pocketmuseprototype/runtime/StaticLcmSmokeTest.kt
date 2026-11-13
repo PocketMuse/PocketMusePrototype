@@ -20,6 +20,7 @@ import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.download.ModelStorage
 import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -44,6 +45,108 @@ class StaticLcmSmokeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val args = InstrumentationRegistry.getArguments()
     private val app = instrumentation.targetContext.applicationContext as PocketMuseApplication
+
+    @Test
+    fun comparesFixedSeedWithAndWithoutFourTaesdPreviews() {
+        assumeTrue(args.getString("taesdSmoke") == "true")
+        runBlocking {
+            val tokenizer = BundledClipTokenizer.prepare(app)
+            val taesd = BundledTaesd.prepare(app)
+            app.downloads.withStaticLcmOutput(storageKey()) { model, path, cache ->
+                report("TAESD device=${Build.MODEL} Android=${Build.VERSION.RELEASE}/API${Build.VERSION.SDK_INT}" +
+                    " pid=${Process.myPid()} model=${model.modelName} version=${model.versionName}" +
+                    " steps=4 seed=42 prompt=$PROMPT cache=${cache?.relativeTo(app.noBackupFilesDir)}")
+                var reference: ByteArray? = null
+                for (decoder in listOf(null, taesd, taesd)) {
+                    val events = mutableListOf<Progress>()
+                    val previews = mutableListOf<Progress>()
+                    var previousFrame: ByteArray? = null
+                    val before = cacheFiles(cache)
+                    val beforePss = Debug.getPss()
+                    report("TAESD enabled=${decoder != null} cacheBeforeBytes=$before pssBeforeKiB=$beforePss")
+                    val preview = decoder?.let {
+                        GenerationPreview { step, total, width, height, rgb, elapsed ->
+                            assertEquals(512, width)
+                            assertEquals(512, height)
+                            assertEquals(786_432, rgb.size)
+                            assertTrue("Preview is a single RGB color", (3 until rgb.size).any { rgb[it] != rgb[it % 3] })
+                            val digest = sha256(rgb)
+                            assertFalse("Preview repeated the previous step", previousFrame?.contentEquals(digest) == true)
+                            previousFrame = digest
+                            previews += Progress("preview", step, total, elapsed)
+                        }
+                    }
+                    val start = SystemClock.elapsedRealtimeNanos()
+                    val image = StaticLcmRequest(path, tokenizer, PROMPT, cache, previewDecoder = decoder, seed = 42)
+                        .generate(onPreview = preview) { stage, step, total, elapsed ->
+                            events += Progress(stage, step, total, elapsed)
+                        }
+                    val totalMs = ms(SystemClock.elapsedRealtimeNanos() - start)
+                    val after = cacheFiles(cache)
+                    report("TAESD enabled=${decoder != null} totalMs=$totalMs generateMs=${ms(image.generateNanos)}" +
+                        " vaeMs=${ms(image.generateNanos - events.single { it.stage == "vae_decoder" }.nanos)}" +
+                        " cacheAfterBytes=$after pssAfterKiB=${Debug.getPss()}")
+                    assertEquals(42L, image.seed)
+                    if (decoder == null) {
+                        assertTrue(previews.isEmpty())
+                        reference = sha256(image.rgb)
+                    } else {
+                        assertEquals(listOf(1, 2, 3, 4), previews.map { it.step })
+                        assertTrue(previews.all { it.total == 4 })
+                        previews.forEach { frame ->
+                            val denoising = events.single { it.stage == "denoising" && it.step == frame.step }
+                            assertTrue(frame.nanos >= denoising.nanos)
+                            report("TAESD step=${frame.step} elapsedMs=${ms(frame.nanos)}" +
+                                " sinceDenoisingMs=${ms(frame.nanos - denoising.nanos)}")
+                        }
+                        assertTrue("TAESD changed the fixed-seed final RGB8 output",
+                            checkNotNull(reference).contentEquals(sha256(image.rgb)))
+                        assertTrue(after.keys.any { File(it).name.startsWith("preview-") })
+                        assertTrue(after.keys.containsAll(before.keys))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun cancelsFromTheFirstTaesdCallbackAndPreservesCallbackFailure() {
+        assumeTrue(args.getString("taesdSmoke") == "true")
+        runBlocking {
+            val tokenizer = BundledClipTokenizer.prepare(app)
+            val taesd = BundledTaesd.prepare(app)
+            app.downloads.withStaticLcmOutput(storageKey()) { _, path, cache ->
+                val cancelled = StaticLcmRequest(path, tokenizer, PROMPT, cache, previewDecoder = taesd)
+                var frames = 0
+                try {
+                    cancelled.generate(onPreview = GenerationPreview { step, _, _, _, _, _ ->
+                        assertEquals(1, step)
+                        frames++
+                        cancelled.requestCancel()
+                    })
+                    fail("Expected cancellation from the TAESD callback")
+                } catch (_: CancellationException) {
+                    assertEquals(1, frames)
+                    report("TAESD cancelled from step 1 pssAfterKiB=${Debug.getPss()}")
+                }
+                val expected = IllegalStateException("Preview callback test failure")
+                try {
+                    StaticLcmRequest(path, tokenizer, PROMPT, cache, previewDecoder = taesd)
+                        .generate(onPreview = GenerationPreview { _, _, _, _, _, _ -> throw expected })
+                    fail("Expected TAESD callback failure")
+                } catch (actual: IllegalStateException) {
+                    assertTrue("JNI must propagate the original exception", actual === expected)
+                }
+                try {
+                    StaticLcmRequest(path, tokenizer, PROMPT, cache, previewDecoder = taesd.resolveSibling("missing.mnn"))
+                        .generate(onPreview = GenerationPreview { _, _, _, _, _, _ -> fail("Unexpected preview") })
+                    fail("Expected a missing decoder to fail generation")
+                } catch (error: RuntimeGenerationException) {
+                    assertTrue(error.message.orEmpty().contains("TAESD"))
+                }
+            }
+        }
+    }
 
     @Test
     fun generatesAndDecodesPng() {
@@ -335,6 +438,8 @@ class StaticLcmSmokeTest {
     }
 
     private fun ms(nanos: Long): Double = nanos / 1_000_000.0
+
+    private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
     private data class Progress(val stage: String, val step: Int, val total: Int, val nanos: Long)
 

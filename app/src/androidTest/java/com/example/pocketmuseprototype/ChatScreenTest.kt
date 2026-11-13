@@ -108,7 +108,7 @@ class ChatScreenTest {
             ) and hasContentDescription(string(R.string.chat_steps)))
                 .assertIsDisplayed()
         }
-        tapOnScreen(compose.onNodeWithText(string(R.string.chat_generation_unavailable)))
+        tapOnScreen(compose.onNodeWithText("Chat"))
         sliderAt(6).assertDoesNotExist()
         step.performClick()
         tapOnScreen(step)
