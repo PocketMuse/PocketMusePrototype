@@ -1,6 +1,16 @@
 package com.example.pocketmuseprototype.auth
 
 import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ServerSocket
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
+import okhttp3.Call
+import okhttp3.Dns
+import okhttp3.EventListener
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -14,6 +24,56 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CivitaiAccountApiTest {
+    @Test
+    fun userInfoTriesNextAddressWhenFirstConnectionFails() = runBlocking {
+        val unavailable = InetAddress.getByName("::1")
+        val reachable = InetAddress.getByName("127.0.0.1")
+        val attempts = mutableListOf<InetAddress>()
+        ServerSocket(0, 1, reachable).use { server ->
+            server.soTimeout = 5_000
+            val executor = Executors.newSingleThreadExecutor()
+            val response = executor.submit {
+                server.accept().use { socket ->
+                    socket.soTimeout = 5_000
+                    val reader = socket.getInputStream().bufferedReader()
+                    assertEquals("GET /api/auth/oauth/userinfo HTTP/1.1", reader.readLine())
+                    while (!reader.readLine().isNullOrEmpty()) { /* Consume request headers. */ }
+                    val body = """{"sub":"42","username":"creator"}"""
+                    socket.getOutputStream().write(
+                        ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                            "Content-Length: ${body.length}\r\nConnection: close\r\n\r\n$body").toByteArray()
+                    )
+                }
+            }
+            val client = civitaiAccountHttpClient().newBuilder()
+                .proxy(Proxy.NO_PROXY)
+                .dns(object : Dns {
+                    override fun lookup(hostname: String) = listOf(unavailable, reachable)
+                })
+                .eventListener(object : EventListener() {
+                    override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
+                        attempts += inetSocketAddress.address
+                    }
+                })
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    chain.proceed(request.newBuilder().url(
+                        request.url.newBuilder().scheme("http").host("account.test").port(server.localPort).build()
+                    ).build())
+                }
+                .build()
+            try {
+                assertEquals(CivitaiProfile("42", "creator"), CivitaiAccountApi(client).userInfo("fake-access"))
+                response.get(5, TimeUnit.SECONDS)
+                assertEquals(listOf(unavailable, reachable), attempts)
+            } finally {
+                client.connectionPool.evictAll()
+                client.dispatcher.executorService.shutdownNow()
+                executor.shutdownNow()
+            }
+        }
+    }
+
     @Test
     fun userInfoUsesBearerAndParsesSubjectAndUsername() = runTest {
         val api = api("""{"sub":"42","id":99,"username":"creator","email_verified":false}""") { request ->

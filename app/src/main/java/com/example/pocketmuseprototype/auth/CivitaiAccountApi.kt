@@ -23,12 +23,13 @@ import retrofit2.http.POST
 internal const val CIVITAI_CLIENT_ID = "33f359b1-7721-4e44-9b3e-530bb0734a89"
 internal const val CIVITAI_OAUTH_BASE = "https://auth.civitai.com/api/auth/oauth/"
 
+internal fun civitaiAccountHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .callTimeout(20, TimeUnit.SECONDS)
+    .followRedirects(false)
+    .build()
+
 internal class CivitaiAccountApi(
-    client: OkHttpClient = OkHttpClient.Builder()
-        .callTimeout(20, TimeUnit.SECONDS)
-        .followRedirects(false)
-        .retryOnConnectionFailure(false)
-        .build()
+    client: OkHttpClient = civitaiAccountHttpClient()
 ) {
     private val service = Retrofit.Builder()
         .baseUrl(CIVITAI_OAUTH_BASE)

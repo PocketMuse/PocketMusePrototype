@@ -14,6 +14,10 @@ Market → Image에서 계정을 연결한다. PocketMusePrototype은 공개 클
 
 ## 검증
 
+- 2026-11-13 SM-S942N / Android 17의 서명된 Release v0.1.0에서 App Links가 `verified`여도 계정 조회가 실패했다. 세션 저장 뒤 `auth.civitai.com`의 IPv6 연결이 `ENETUNREACH`로 실패했고, 계정 HTTP 클라이언트의 `retryOnConnectionFailure(false)`가 다른 주소 연결을 막고 있었다. 해당 설정을 제거해 OkHttp의 기본 연결 복구를 사용한다. 20초 요청 제한과 리다이렉트 거부는 유지한다. [OkHttp 4.12.0 연결 복구 계약](https://github.com/square/okhttp/blob/parent-4.12.0/okhttp/src/main/kotlin/okhttp3/OkHttpClient.kt)
+- 루프백 가짜 서버와 고정 DNS 응답으로 첫 IPv6 연결 실패 후 IPv4 계정 조회를 검증한다. 기존 설정에서 실패하고 수정 후 통과했으며 JVM 테스트 73개와 서명 Release 빌드가 통과했다.
+- 같은 SM-S942N에 임시 진단 로그를 제거한 수정 Release APK를 업데이트 설치한 뒤 계정 연결 성공을 확인했다. 프로세스 강제 종료·재실행 후에도 Market에 계정명과 다운로드 버튼이 표시됐고 계정 조회 오류가 사라졌다.
+
 - `:app:assembleDebug`, `:app:testDebugUnitTest` 28개, `:app:lintDebug`를 통과했다. `:app:connectedDebugAndroidTest` 13개는 Galaxy S20+ (SM-G986N, Android 13)에서 통과했다.
 - 같은 기기에서 사용자가 실제 Civitai 로그인과 동의를 완료했다. 프로세스를 종료하고 다시 실행한 뒤 Market에서 사용자명과 공개 모델 카드를 확인했다. 계정 메뉴로 연결을 해제한 뒤 암호화 세션 파일 삭제와 미연결 화면을 확인했다. 설치한 APK는 `pocketmuse.github.io: verified`이며 콜백 담당 Activity는 하나다.
 - 토큰 만료와 회전, 동시에 들어온 갱신 요청, 일시적인 오류는 합성 응답을 사용하는 호스트 테스트에서 검증했다. 실제 Civitai 서버에서 토큰 갱신은 수행하지 않았다.
