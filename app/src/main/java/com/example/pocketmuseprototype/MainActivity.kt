@@ -12,6 +12,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.compose.material3.SnackbarHostState
@@ -29,6 +30,7 @@ import com.example.pocketmuseprototype.catalog.CatalogCheckpoint
 import com.example.pocketmuseprototype.download.EnqueueResult
 import com.example.pocketmuseprototype.download.SharedLcmCancellation
 import com.example.pocketmuseprototype.download.SharedLcmState
+import com.example.pocketmuseprototype.runtime.ImageGenerationViewModel
 import com.example.pocketmuseprototype.ui.PocketMuseApp
 import com.example.pocketmuseprototype.ui.theme.PocketMusePrototypeTheme
 import java.io.IOException
@@ -41,6 +43,7 @@ import net.openid.appauth.AuthorizationService
 class MainActivity : ComponentActivity() {
     private val app get() = application as PocketMuseApplication
     private val auth get() = app.authManager
+    private val imageGeneration by viewModels<ImageGenerationViewModel> { ImageGenerationViewModel.factory(app) }
     private var libraryRequest by mutableIntStateOf(0)
     private var askedNotifications = false
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -74,6 +77,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val authState by auth.state.collectAsStateWithLifecycle()
             val library by app.downloads.models.collectAsStateWithLifecycle(emptyList())
+            val chatGeneration by imageGeneration.state.collectAsStateWithLifecycle()
             val sharedLcm by app.sharedLcm.state.collectAsStateWithLifecycle(SharedLcmState.Missing)
             var settingsReadAttempt by remember { mutableIntStateOf(0) }
             val iterationsFlow = remember(settingsReadAttempt) {
@@ -122,7 +126,10 @@ class MainActivity : ComponentActivity() {
                     } else null,
                     onHqqIterationsChange = { iterations ->
                         app.appScope.async { app.conversionSettings.setHqqIterations(iterations) }.await()
-                    }
+                    },
+                    chatGeneration = chatGeneration,
+                    onGenerateImage = imageGeneration::generate,
+                    onCancelGeneration = imageGeneration::cancel,
                 )
             }
         }

@@ -44,7 +44,10 @@ internal fun DiscreteSlider(
     var focused by remember { mutableStateOf(false) }
     Slider(
         value = value.toFloat(),
-        onValueChange = { onValueChange(it.roundToInt()) },
+        onValueChange = {
+            val index = ((it - choices.first) / choices.step).roundToInt().coerceIn(0, intervals)
+            onValueChange(choices.first + index * choices.step)
+        },
         onValueChangeFinished = onValueChangeFinished,
         modifier = modifier.fillMaxWidth().heightIn(min = 48.dp)
             .onFocusChanged { focused = it.isFocused },

@@ -91,7 +91,7 @@ class StaticLcmSmokeTest {
             }
             report("seed=${image.seed} runtimeCreationMs=${ms(image.runtimeNanos)}" +
                 " generateMs=${ms(image.generateNanos)}")
-            assertEquals(42L, image.seed)
+            assertTrue(image.seed in 0..0xffff_ffffL)
             assertEquals(512, image.width)
             assertEquals(512, image.height)
             assertEquals(786_432, image.rgb.size)

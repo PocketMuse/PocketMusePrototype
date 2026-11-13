@@ -9,6 +9,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 
+internal val StaticLcmSteps = 2..8 step 2
+internal const val DEFAULT_STATIC_LCM_STEPS = 4
+
 @Keep
 internal data class GeneratedImage(
     val seed: Long,
@@ -33,6 +36,7 @@ internal fun interface GenerationProgress {
 
 /**
  * One static LCM request. Keep the model, tokenizer and optional cache paths valid until return.
+ * Uses 2, 4, 6 or 8 denoising steps and lets the Runtime choose the seed.
  * Runtime manages disk cache access. A null or invalid cache path allows uncached execution.
  */
 internal class StaticLcmRequest(
@@ -40,7 +44,12 @@ internal class StaticLcmRequest(
     private val tokenizerDir: File,
     private val prompt: String,
     private val cacheDir: File?,
+    private val steps: Int = DEFAULT_STATIC_LCM_STEPS,
 ) {
+    init {
+        require(steps in StaticLcmSteps) { "Unsupported static LCM step count: $steps" }
+    }
+
     private val lock = Any()
     private var started = false
     private var cancelled = false
@@ -87,7 +96,7 @@ internal class StaticLcmRequest(
             }
         }
         try {
-            return NativeRuntime.generate(handle, model, tokenizer, cache, utf8Prompt, onProgress)
+            return NativeRuntime.generate(handle, model, tokenizer, cache, steps, utf8Prompt, onProgress)
         } finally {
             synchronized(lock) {
                 token = 0L
@@ -118,6 +127,7 @@ private object NativeRuntime {
         modelDir: String,
         tokenizerDir: String,
         cacheDir: String,
+        steps: Int,
         prompt: ByteArray,
         onProgress: GenerationProgress?,
     ): GeneratedImage

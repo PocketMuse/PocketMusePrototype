@@ -1,2 +1,4 @@
 /app/src/main/assets/sd15-hqq-b128-manual-v1/graph.bin binary
 /app/src/main/assets/sd15-hqq-b128-manual-v1/manifest.json -text
+/app/src/main/assets/sd15-tokenizer/vocab.json -text
+/app/src/main/assets/sd15-tokenizer/merges.txt -text

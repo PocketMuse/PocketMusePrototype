@@ -97,9 +97,9 @@ class ChatScreenTest {
         val step = compose.onNodeWithContentDescription(string(R.string.chat_steps))
         step.performClick()
         sliderAt(4).assertIsDisplayed()
-        for (value in listOf(2, 6, 8, 4, 6)) {
+        for ((input, value) in listOf(2f to 2, 5.8f to 6, 8f to 8, 4.2f to 4, 6f to 6)) {
             compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress))
-                .performSemanticsAction(SemanticsActions.SetProgress) { it(value.toFloat()) }
+                .performSemanticsAction(SemanticsActions.SetProgress) { it(input) }
             sliderAt(value).assertIsDisplayed()
             compose.onNode(SemanticsMatcher.expectValue(
                 SemanticsProperties.StateDescription, string(R.string.chat_step_count, value)
@@ -139,7 +139,7 @@ class ChatScreenTest {
                         generation.value = ChatGeneration(it.prompt, ChatGeneration.Status.Running())
                     },
                     onCancelGeneration = {
-                        generation.value = ChatGeneration(prompt, ChatGeneration.Status.Cancelled)
+                        generation.value = ChatGeneration(prompt, ChatGeneration.Status.Cancelling)
                     }
                 )
             }
@@ -160,10 +160,13 @@ class ChatScreenTest {
         compose.runOnIdle { assertEquals(listOf(ChatImageRequest(model.storageKey, 8, prompt)), requests) }
         compose.onNodeWithText(model.modelName).assertIsNotEnabled()
         step.assertIsNotEnabled()
-        send.assertIsNotEnabled()
-        compose.onNodeWithText(string(R.string.chat_generating)).assertIsDisplayed()
-        compose.onNodeWithText(string(R.string.chat_cancel_generation)).performClick()
+        send.assertDoesNotExist()
+        compose.onNodeWithText(string(R.string.chat_preparing)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(string(R.string.chat_cancel_generation)).assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription(string(R.string.chat_cancelling_generation)).assertIsNotEnabled()
+        compose.runOnIdle { generation.value = ChatGeneration(prompt, ChatGeneration.Status.Cancelled) }
         compose.onNodeWithText(string(R.string.chat_generation_cancelled)).assertIsDisplayed()
+        send.assertIsNotEnabled()
     }
 
     @Test

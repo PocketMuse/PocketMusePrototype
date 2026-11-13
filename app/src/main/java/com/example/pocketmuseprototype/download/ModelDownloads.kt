@@ -536,26 +536,27 @@ internal class ModelDownloads(
 
     /**
      * Lends the verified output and its optional OpenCL cache path while holding the conversion
-     * lock. The callback must wait for native cleanup before returning, including on cancellation.
+     * lock. Throws [StaticLcmOutputUnavailableException] when the model or verified output is missing.
+     * The callback must wait for native cleanup before returning, including on cancellation.
      */
     suspend fun <T> withStaticLcmOutput(key: String, use: suspend (LibraryModel, File, File?) -> T): T =
         withContext(Dispatchers.IO) {
             conversions.withLock {
                 val model = commands.withLock {
-                    val current = store.find(key) ?: error("No Library model for storage key $key")
-                    check(current.downloadStatus == DownloadStatus.Downloaded &&
-                        current.conversionStatus == ModelConversionStatus.Converted &&
-                        current.conversionRecipeId == STATIC_LCM_RECIPE
-                    ) { "Library model $key has no completed static LCM output" }
+                    val current = store.find(key)
+                    if (current == null || current.downloadStatus != DownloadStatus.Downloaded ||
+                        current.conversionStatus != ModelConversionStatus.Converted ||
+                        current.conversionRecipeId != STATIC_LCM_RECIPE
+                    ) throw StaticLcmOutputUnavailableException("Library model $key has no completed static LCM output")
                     generatingKey = key
                     current
                 }
                 try {
                     val expected = model.conversionFiles?.let(::decodeOutputFiles)
-                    check(expected?.keys == SD15_RUNTIME_FILES &&
-                        model.conversionTemplateId == BundledHqqTemplate.ID && model.conversionHashes != null &&
-                        checkOutput(model) != null
-                    ) { "Invalid static LCM output for $key" }
+                    if (expected?.keys != SD15_RUNTIME_FILES ||
+                        model.conversionTemplateId != BundledHqqTemplate.ID || model.conversionHashes == null ||
+                        checkOutput(model) == null
+                    ) throw StaticLcmOutputUnavailableException("Invalid static LCM output for $key")
                     val id = checkNotNull(model.conversionWorkId)
                     use(model, storage.conversionOutput(key, id), storage.openClCacheDirectory(key, id))
                 } finally {
@@ -840,6 +841,8 @@ internal class ModelDownloads(
 }
 
 internal class ConversionFailure(val code: String) : IOException()
+
+internal class StaticLcmOutputUnavailableException(message: String) : IllegalStateException(message)
 
 private const val PROGRESS_INTERVAL_NS = 500_000_000L
 private val SD15_RUNTIME_FILES = setOf("text_encoder.mnn", "unet.mnn", "vae_decoder.mnn")

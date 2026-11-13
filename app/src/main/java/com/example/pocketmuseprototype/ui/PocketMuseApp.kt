@@ -82,7 +82,10 @@ internal fun PocketMuseApp(
     libraryRequest: Int = 0,
     hqqIterations: Int? = null,
     onRetryHqqSettings: (() -> Unit)? = null,
-    onHqqIterationsChange: suspend (Int) -> Unit = {}
+    onHqqIterationsChange: suspend (Int) -> Unit = {},
+    chatGeneration: ChatGeneration? = null,
+    onGenerateImage: ((ChatImageRequest) -> Unit)? = null,
+    onCancelGeneration: (() -> Unit)? = null,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     val tabStateHolder = rememberSaveableStateHolder()
@@ -135,7 +138,10 @@ internal fun PocketMuseApp(
                         AppTab.Chat -> tabStateHolder.SaveableStateProvider(AppTab.Chat.name) {
                             ChatScreen(
                                 library = library,
-                                modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth()
+                                modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth(),
+                                generation = chatGeneration,
+                                onGenerate = onGenerateImage,
+                                onCancelGeneration = onCancelGeneration,
                             )
                         }
                         AppTab.Market -> tabStateHolder.SaveableStateProvider(AppTab.Market.name) {

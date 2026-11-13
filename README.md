@@ -4,6 +4,8 @@ Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받�
 
 Market에서 체크포인트 다운로드를 요청하면 공용 SD1.5 LCM LoRA도 별도 작업으로 준비한다. 진행률, 실패 재시도 및 삭제는 Library에서 확인할 수 있다. [공용 LoRA 다운로드 계약](docs/Model-Downloads.md#공용-sd15-lcm-lora)
 
+Chat에서 Library의 최적화된 정적 LCM 모델을 선택하고 프롬프트를 전송하면 기기 OpenCL GPU에서 512×512 이미지를 생성한다. 스텝은 2·4·6·8 중 선택하며 기본값은 4다. 앱이 번들 Tokenizer를 자동으로 준비하고, Runtime이 매 요청의 seed를 선택한다. 다른 탭으로 이동해도 작업이 계속되며 최신 요청과 결과 한 장은 화면 상태로만 유지한다. [Chat 생성 계약](docs/Runtime.md#chat-이미지-생성)
+
 ## 빌드와 테스트
 
 JDK 21, Android SDK 36.1, NDK 27.1.12297006, CMake 3.22.1 및 Platform-Tools를 준비한다. APK는 `arm64-v8a`용이며 최소 Android 10(API 29)에서 실행한다. CMake는 첫 구성에서 SHA-512가 고정된 nlohmann/json 3.12.0과 PicoSHA2 1.0.1 소스를 가져온다.
@@ -50,6 +52,18 @@ Move-Item -LiteralPath "$build/engine-build.json" -Destination "$build/engine-bu
 같은 체크아웃의 Git Bash에서 `bash scripts/build-android.sh --project-only`를 실행해 Android vcpkg ICU와 CMake 빌드 설정을 준비한다. 앱의 Gradle 빌드는 검증된 to-mnn 소스에서 Runtime을 직접 컴파일한다. 같은 고정 리비전의 별도 체크아웃을 사용하려면 `-Psd15RuntimeRoot=<경로>`를 지정한다. [빌드 검증 계약](docs/Runtime.md#빌드와-호출-계약)
 
 ## 실제 정적 LCM 추론 스모크
+
+이미 준비된 ToonYou Beta 6가 있는 Galaxy S20+에서 Chat 경로를 검증하려면 다음과 같이 APK를 업데이트하고 계측 테스트를 실행한다. 이 테스트는 2스텝 요청의 첫 스텝에서 취소한 뒤, 탭 이동과 Activity 재생성을 거쳐 4스텝 이미지가 화면에 표시되는지 확인한다.
+
+```powershell
+.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+$pkg = 'com.example.pocketmuseprototype'
+adb shell am instrument -w -r -e class "$pkg.runtime.ChatGenerationAndroidTest" -e chatModelName ToonYou "$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
+아래 Runtime 전용 스모크는 별도의 수동 Tokenizer 경로를 사용한다.
 
 기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 앱은 Room v4를 사용하고 v1부터의 마이그레이션을 등록한다. 기존 설치와 같은 서명의 APK를 `adb install -r`로 설치한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
 

@@ -72,7 +72,7 @@ Java_com_example_pocketmuseprototype_runtime_NativeRuntime_destroyToken(JNIEnv*,
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_pocketmuseprototype_runtime_NativeRuntime_generate(
         JNIEnv* env, jobject, jlong handle, jstring model_dir, jstring tokenizer_dir,
-        jstring cache_dir, jbyteArray prompt, jobject callback) {
+        jstring cache_dir, jint steps, jbyteArray prompt, jobject callback) {
     const char* failure_type = "com/example/pocketmuseprototype/runtime/RuntimeInitializationException";
     try {
         auto& token = *token_at(handle);
@@ -93,8 +93,7 @@ Java_com_example_pocketmuseprototype_runtime_NativeRuntime_generate(
         const jlong runtime_nanos = elapsed_nanos(runtime_start);
         failure_type = "com/example/pocketmuseprototype/runtime/RuntimeGenerationException";
 
-        sd15::GenerateOptions request(sd15::SamplingPreset::Lcm, 4, 1.0f);
-        request.seed = 42;
+        sd15::GenerateOptions request(sd15::SamplingPreset::Lcm, steps, 1.0f);
         const auto prompt_size = env->GetArrayLength(prompt);
         request.prompt.resize(static_cast<size_t>(prompt_size));
         if (prompt_size != 0) {
