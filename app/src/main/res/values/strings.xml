@@ -136,4 +136,21 @@
     <string name="library_conversion_error_output">최적화 결과가 없거나 손상되었습니다. 다운로드한 원본은 남습니다.</string>
     <string name="library_conversion_error_cleanup">이전 작업의 파일을 정리하지 못했습니다. 다운로드한 원본은 남습니다.</string>
     <string name="library_conversion_error_generic">최적화를 완료하지 못했습니다. 다운로드한 원본은 남습니다.</string>
+    <string name="chat_saving_image">이미지 저장 중</string>
+    <string name="chat_image_save_failed">이미지를 Gallery에 저장하지 못했어요.</string>
+    <string name="gallery_title">Gallery</string>
+    <string name="gallery_empty">이미지를 생성하면 여기에 표시돼요.</string>
+    <string name="gallery_load_failed">Gallery를 열지 못했어요.</string>
+    <string name="gallery_image_unavailable">이미지를 표시할 수 없어요.</string>
+    <string name="gallery_image_title">생성된 이미지</string>
+    <string name="gallery_thumbnail">생성된 이미지, %1$s</string>
+    <string name="gallery_model">모델: %1$s</string>
+    <string name="gallery_prompt">프롬프트: %1$s</string>
+    <string name="gallery_steps">스텝: %1$d</string>
+    <string name="gallery_delete">삭제</string>
+    <string name="gallery_delete_image">이미지 삭제</string>
+    <string name="gallery_confirm_delete">이 이미지를 삭제할까요?</string>
+    <string name="gallery_delete_failed">이미지를 삭제하지 못했어요.</string>
+    <string name="gallery_close">닫기</string>
+    <string name="gallery_cancel">취소</string>
 </resources>

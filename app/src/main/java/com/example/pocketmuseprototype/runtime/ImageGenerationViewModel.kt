@@ -1,6 +1,7 @@
 package com.example.pocketmuseprototype.runtime
 
 import android.graphics.Bitmap
+import java.io.File
 import androidx.annotation.MainThread
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
@@ -27,29 +28,44 @@ import kotlinx.coroutines.withContext
 private const val MAX_PROMPT_UTF8_BYTES = 16 * 1024
 
 internal class ImageGenerationViewModel(
-    private val runGeneration: suspend (ChatImageRequest, GenerationProgress) -> Status.Complete,
+    private val saveImage: suspend (Bitmap, ChatImageRequest) -> File,
+    private val runGeneration: suspend (ChatImageRequest, GenerationProgress) -> GeneratedImage,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow<ChatGeneration?>(null)
+    private val mutableState = MutableStateFlow<List<ChatGeneration>>(emptyList())
     val state = mutableState.asStateFlow()
     private var job: Job? = null
+    private var nextId = 0L
 
     @MainThread
     fun generate(request: ChatImageRequest) {
         if (job?.isCompleted == false || request.steps !in StaticLcmSteps || request.prompt.isBlank()) return
+        val id = nextId++
         if (request.prompt.length > MAX_PROMPT_UTF8_BYTES ||
             request.prompt.encodeToByteArray().size > MAX_PROMPT_UTF8_BYTES
         ) {
-            mutableState.value = ChatGeneration(request.prompt, Status.Failed(R.string.chat_prompt_too_long))
+            append(ChatGeneration(id, request.prompt, Status.Failed(R.string.chat_prompt_too_long)))
             return
         }
-        mutableState.value = ChatGeneration(request.prompt, Status.Running())
+        append(ChatGeneration(id, request.prompt, Status.Running()))
         job = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             var result: Status = Status.Cancelled
             try {
                 ensureActive()
-                val complete = runGeneration(request, ::updateProgress)
+                val image = runGeneration(request) { stage, step, total, _ ->
+                    updateProgress(id, stage, step, total)
+                }
+                val bitmap = withContext(Dispatchers.Default) { image.toBitmap() }
                 ensureActive()
-                result = complete
+                updateLatest(id) { Status.Saving }
+                result = try {
+                    Status.Complete(saveImage(bitmap, request))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    Status.SaveFailed(bitmap.asImageBitmap())
+                } catch (_: OutOfMemoryError) {
+                    Status.SaveFailed(bitmap.asImageBitmap())
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: StaticLcmOutputUnavailableException) {
@@ -62,23 +78,32 @@ internal class ImageGenerationViewModel(
                 result = Status.Failed(R.string.chat_generation_failed)
             } finally {
                 // The model lease and JNI call have both returned before this state is published.
-                mutableState.value = ChatGeneration(
-                    request.prompt,
-                    if (mutableState.value?.status == Status.Cancelling) Status.Cancelled else result,
-                )
+                updateLatest(id) { if (it == Status.Cancelling) Status.Cancelled else result }
             }
         }
     }
 
     @MainThread
     fun cancel() {
-        mutableState.update { current ->
-            if (current?.status is Status.Running) current.copy(status = Status.Cancelling) else current
-        }
-        if (mutableState.value?.status == Status.Cancelling) job?.cancel()
+        val current = mutableState.value.lastOrNull() ?: return
+        if (current.status !is Status.Running) return
+        updateLatest(current.id) { Status.Cancelling }
+        job?.cancel()
     }
 
-    private fun updateProgress(stage: String, step: Int, total: Int, elapsedNanos: Long) {
+    @MainThread
+    fun imageDeleted(id: String) {
+        mutableState.update { messages ->
+            messages.map { message ->
+                val status = message.status
+                if (status is Status.Complete && status.file.nameWithoutExtension == id) {
+                    message.copy(status = Status.Failed(R.string.gallery_image_unavailable))
+                } else message
+            }
+        }
+    }
+
+    private fun updateProgress(id: Long, stage: String, step: Int, total: Int) {
         val progress = when (stage) {
             "text_encoder" -> Status.Running(R.string.chat_encoding_prompt)
             "unet" -> Status.Running(R.string.chat_generating)
@@ -86,21 +111,37 @@ internal class ImageGenerationViewModel(
             "vae_decoder" -> Status.Running(R.string.chat_finishing_image)
             else -> return
         }
-        mutableState.update { current ->
-            if (current?.status is Status.Running) current.copy(status = progress) else current
+        updateLatest(id) { if (it is Status.Running) progress else it }
+    }
+
+    private fun append(message: ChatGeneration) {
+        mutableState.update { messages ->
+            messages.map { previous ->
+                if (previous.status is Status.SaveFailed && previous.status.image != null) {
+                    previous.copy(status = Status.SaveFailed())
+                } else previous
+            } + message
+        }
+    }
+
+    private fun updateLatest(id: Long, update: (Status) -> Status) {
+        mutableState.update { messages ->
+            val latest = messages.lastOrNull() ?: return@update messages
+            if (latest.id != id) return@update messages
+            val status = update(latest.status)
+            if (status == latest.status) messages else messages.dropLast(1) + latest.copy(status = status)
         }
     }
 
     companion object {
         fun factory(app: PocketMuseApplication) = viewModelFactory {
             initializer {
-                ImageGenerationViewModel { request, progress ->
+                ImageGenerationViewModel(saveImage = { bitmap, request ->
+                    app.gallery.save(bitmap, request.modelName, request.prompt, request.steps).file
+                }) { request, progress ->
                     val tokenizer = BundledClipTokenizer.prepare(app)
-                    val image = app.downloads.withStaticLcmOutput(request.modelKey) { _, model, cache ->
+                    app.downloads.withStaticLcmOutput(request.modelKey) { _, model, cache ->
                         StaticLcmRequest(model, tokenizer, request.prompt, cache, request.steps).generate(progress)
-                    }
-                    withContext(Dispatchers.Default) {
-                        Status.Complete(image.toBitmap().asImageBitmap(), image.seed)
                     }
                 }
             }

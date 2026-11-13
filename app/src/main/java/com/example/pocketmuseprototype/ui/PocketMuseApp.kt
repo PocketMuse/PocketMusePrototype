@@ -1,6 +1,7 @@
 package com.example.pocketmuseprototype.ui
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +55,8 @@ import com.example.pocketmuseprototype.catalog.MarketViewModel
 import com.example.pocketmuseprototype.download.LibraryItem
 import com.example.pocketmuseprototype.download.LibraryModel
 import com.example.pocketmuseprototype.download.SharedLcmState
+import com.example.pocketmuseprototype.gallery.GalleryImage
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private enum class AppTab(@get:StringRes val label: Int) {
@@ -83,9 +87,11 @@ internal fun PocketMuseApp(
     hqqIterations: Int? = null,
     onRetryHqqSettings: (() -> Unit)? = null,
     onHqqIterationsChange: suspend (Int) -> Unit = {},
-    chatGeneration: ChatGeneration? = null,
+    chatMessages: List<ChatGeneration> = emptyList(),
     onGenerateImage: ((ChatImageRequest) -> Unit)? = null,
     onCancelGeneration: (() -> Unit)? = null,
+    gallery: Flow<List<GalleryImage>>? = null,
+    onDeleteImage: suspend (String) -> Unit = {},
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chat) }
     val tabStateHolder = rememberSaveableStateHolder()
@@ -111,8 +117,19 @@ internal fun PocketMuseApp(
                 val drawerSemantics = if (drawerState.isClosed && !drawerState.isAnimationRunning) {
                     Modifier.clearAndSetSemantics {}
                 } else Modifier
-                Box(drawerSemantics) {
-                    ConversionSettingsContent(hqqIterations, onRetryHqqSettings, onHqqIterationsChange)
+                GalleryPanel(
+                    gallery = gallery.takeIf { drawerState.isOpen || drawerState.isAnimationRunning },
+                    onDelete = onDeleteImage,
+                    modifier = drawerSemantics.fillMaxSize(),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text(
+                            stringResource(R.string.conversion_settings_title),
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                        HorizontalDivider()
+                        ConversionSettingsContent(hqqIterations, onRetryHqqSettings, onHqqIterationsChange)
+                    }
                 }
             }
         }
@@ -139,7 +156,7 @@ internal fun PocketMuseApp(
                             ChatScreen(
                                 library = library,
                                 modifier = Modifier.weight(1f).widthIn(max = ContentMaxWidth).fillMaxWidth(),
-                                generation = chatGeneration,
+                                messages = chatMessages,
                                 onGenerate = onGenerateImage,
                                 onCancelGeneration = onCancelGeneration,
                             )

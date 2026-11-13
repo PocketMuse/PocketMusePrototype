@@ -207,7 +207,7 @@ class StaticLcmSmokeTest {
         val modelRoot = output.parentFile!!.parentFile!!
         val cacheDir = app.noBackupFilesDir.resolve("opencl-cache/$key/$id")
         val db = Room.databaseBuilder(app, LibraryDatabase::class.java, LibraryDatabase.NAME)
-            .addMigrations(LibraryDatabase.MIGRATION_1_2, LibraryDatabase.MIGRATION_2_3, LibraryDatabase.MIGRATION_3_4)
+            .addMigrations(*LibraryDatabase.migrations)
             .build()
         try {
             runBlocking {

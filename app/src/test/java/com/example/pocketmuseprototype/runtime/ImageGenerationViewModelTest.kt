@@ -16,7 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.File
@@ -43,7 +43,7 @@ class ImageGenerationViewModelTest {
             val requests = mutableListOf<ChatImageRequest>()
             val cleanup = CompletableDeferred<Unit>()
             lateinit var callback: GenerationProgress
-            val viewModel = ImageGenerationViewModel { request, progress ->
+            val viewModel = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { request, progress ->
                 requests += request
                 callback = progress
                 if (requests.size == 1) {
@@ -55,34 +55,40 @@ class ImageGenerationViewModelTest {
                 }
                 throw StaticLcmOutputUnavailableException("internal model path")
             }
-            val first = ChatImageRequest("1_2", 6, "정원")
-            val second = ChatImageRequest("3_4", 2, "Sky")
+            val first = ChatImageRequest("1_2", "Garden model", 6, "정원")
+            val second = ChatImageRequest("3_4", "Sky model", 2, "Sky")
             viewModel.generate(first.copy(steps = 3))
-            assertNull(viewModel.state.value)
-            viewModel.generate(first.copy(prompt = "정".repeat(6_000)))
-            assertEquals(Status.Failed(R.string.chat_prompt_too_long), viewModel.state.value?.status)
+            assertTrue(viewModel.state.value.isEmpty())
+            val tooLong = first.copy(prompt = "정".repeat(6_000))
+            viewModel.generate(tooLong)
+            assertEquals(Status.Failed(R.string.chat_prompt_too_long), viewModel.state.value.last().status)
             viewModel.generate(first)
             viewModel.generate(second)
             assertEquals(listOf(first), requests)
-            assertEquals(Status.Running(), viewModel.state.value?.status)
+            assertEquals(Status.Running(), viewModel.state.value.last().status)
             callback.update("denoising", 2, 6, 0)
-            assertEquals(Status.Running(R.string.chat_denoising, 2, 6), viewModel.state.value?.status)
+            assertEquals(Status.Running(R.string.chat_denoising, 2, 6), viewModel.state.value.last().status)
 
             viewModel.cancel()
             runCurrent()
             callback.update("vae_decoder", 0, 6, 0)
             viewModel.generate(second)
             assertEquals(listOf(first), requests)
-            assertEquals(Status.Cancelling, viewModel.state.value?.status)
+            assertEquals(Status.Cancelling, viewModel.state.value.last().status)
             cleanup.complete(Unit)
             runCurrent()
-            assertEquals(Status.Cancelled, viewModel.state.value?.status)
+            assertEquals(Status.Cancelled, viewModel.state.value.last().status)
 
             viewModel.generate(second)
             runCurrent()
             assertEquals(listOf(first, second), requests)
-            assertEquals(second.prompt, viewModel.state.value?.prompt)
-            assertEquals(Status.Failed(R.string.chat_model_unavailable), viewModel.state.value?.status)
+            assertEquals(listOf(tooLong.prompt, first.prompt, second.prompt), viewModel.state.value.map { it.prompt })
+            assertEquals(Status.Cancelled, viewModel.state.value[1].status)
+            assertEquals(Status.Failed(R.string.chat_model_unavailable), viewModel.state.value.last().status)
+            val freshSession = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { _, _ ->
+                error("No generation requested")
+            }
+            assertTrue(freshSession.state.value.isEmpty())
         } finally {
             Dispatchers.resetMain()
         }

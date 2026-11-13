@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,6 +50,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
@@ -64,6 +67,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
+import coil3.compose.AsyncImage
+import coil3.request.CachePolicy
+import coil3.request.ImageRequest
 import com.example.pocketmuseprototype.R
 import com.example.pocketmuseprototype.download.DownloadStatus
 import com.example.pocketmuseprototype.download.LibraryItem
@@ -72,11 +78,12 @@ import com.example.pocketmuseprototype.download.ModelConversionStatus
 import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
 import com.example.pocketmuseprototype.runtime.DEFAULT_STATIC_LCM_STEPS
 import com.example.pocketmuseprototype.runtime.StaticLcmSteps
+import java.io.File
 
 /** One independent prompt, with the selected Library storage key and denoising step count. */
-internal data class ChatImageRequest(val modelKey: String, val steps: Int, val prompt: String)
+internal data class ChatImageRequest(val modelKey: String, val modelName: String, val steps: Int, val prompt: String)
 
-internal data class ChatGeneration(val prompt: String, val status: Status) {
+internal data class ChatGeneration(val id: Long, val prompt: String, val status: Status) {
     sealed interface Status {
         /** Step counts describe denoising only. Other stages are indeterminate. */
         data class Running(
@@ -85,14 +92,16 @@ internal data class ChatGeneration(val prompt: String, val status: Status) {
             val total: Int = 0,
         ) : Status
         data object Cancelling : Status
-        data class Complete(val image: ImageBitmap, val seed: Long) : Status
+        data object Saving : Status
+        data class Complete(val file: File) : Status
+        data class SaveFailed(val image: ImageBitmap? = null) : Status
         data class Failed(@param:StringRes val message: Int) : Status
         data object Cancelled : Status
     }
 }
 
 /**
- * The caller owns generation and supplies its latest state. A null [onGenerate] disables sending.
+ * The caller owns generation and supplies its session state. A null [onGenerate] disables sending.
  * Both event callbacks run on the UI thread. The caller schedules generation and handles
  * [onCancelGeneration] for the active request.
  */
@@ -100,7 +109,7 @@ internal data class ChatGeneration(val prompt: String, val status: Status) {
 internal fun ChatScreen(
     library: List<LibraryItem>,
     modifier: Modifier = Modifier,
-    generation: ChatGeneration? = null,
+    messages: List<ChatGeneration> = emptyList(),
     onGenerate: ((ChatImageRequest) -> Unit)? = null,
     onCancelGeneration: (() -> Unit)? = null
 ) {
@@ -119,18 +128,19 @@ internal fun ChatScreen(
     LaunchedEffect(model?.storageKey) {
         if (model != null) modelKey = model.storageKey
     }
-    val status = generation?.status
-    val isGenerating = status is ChatGeneration.Status.Running || status == ChatGeneration.Status.Cancelling
+    val status = messages.lastOrNull()?.status
+    val isGenerating = status is ChatGeneration.Status.Running ||
+        status == ChatGeneration.Status.Cancelling || status == ChatGeneration.Status.Saving
     val request = model?.takeIf { draft.isNotBlank() && !isGenerating }?.let {
-        ChatImageRequest(it.storageKey, steps, draft)
+        ChatImageRequest(it.storageKey, it.modelName, steps, draft)
     }
     val focusManager = LocalFocusManager.current
     var showModels by remember(isGenerating) { mutableStateOf(false) }
 
     Column(modifier.padding(bottom = 12.dp)) {
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            if (generation != null) {
-                ChatContent(generation)
+            if (messages.isNotEmpty()) {
+                ChatContent(messages)
             } else if (onGenerate == null || models.isEmpty()) {
                 Text(
                     stringResource(if (onGenerate == null) R.string.chat_generation_unavailable else R.string.chat_models_empty),
@@ -156,6 +166,7 @@ internal fun ChatScreen(
             isGenerating = isGenerating,
             canSend = onGenerate != null && request != null,
             isCancelling = status == ChatGeneration.Status.Cancelling,
+            isSaving = status == ChatGeneration.Status.Saving,
             onCancel = onCancelGeneration,
             onSend = {
                 if (request != null && onGenerate != null) {
@@ -228,6 +239,7 @@ private fun ChatComposer(
     isGenerating: Boolean,
     canSend: Boolean,
     isCancelling: Boolean,
+    isSaving: Boolean,
     onCancel: (() -> Unit)?,
     onSend: () -> Unit
 ) {
@@ -255,7 +267,7 @@ private fun ChatComposer(
                     ) {
                         Text(steps.toString())
                     }
-                    val actionEnabled = if (isGenerating) !isCancelling && onCancel != null else canSend
+                    val actionEnabled = if (isGenerating) !isCancelling && !isSaving && onCancel != null else canSend
                     OutlinedIconButton(
                         onClick = { if (isGenerating) onCancel?.invoke() else onSend() },
                         enabled = actionEnabled,
@@ -270,6 +282,7 @@ private fun ChatComposer(
                         Icon(
                             painterResource(if (isGenerating) R.drawable.ic_stop else R.drawable.ic_arrow_up),
                             stringResource(when {
+                                isSaving -> R.string.chat_saving_image
                                 isCancelling -> R.string.chat_cancelling_generation
                                 isGenerating -> R.string.chat_cancel_generation
                                 else -> R.string.chat_send
@@ -353,57 +366,100 @@ private fun ChatStepPopup(
 }
 
 @Composable
-private fun ChatContent(generation: ChatGeneration) {
+private fun ChatContent(messages: List<ChatGeneration>) {
+    val listState = rememberLazyListState()
+    val latestId = messages.last().id
+    var previousId by remember { mutableLongStateOf(latestId) }
+    LaunchedEffect(latestId) {
+        if (previousId != latestId) {
+            previousId = latestId
+            listState.animateScrollToItem(0)
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(top = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        state = listState,
+        reverseLayout = true,
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.Bottom)
     ) {
-        item {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(0.8f),
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    Text(
-                        generation.prompt,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
+        items(messages.asReversed(), key = { it.id }) { generation ->
+            ChatMessage(generation)
+        }
+    }
+}
+
+@Composable
+private fun ChatMessage(generation: ChatGeneration) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(0.8f),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Text(
+                    generation.prompt,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         }
-        item {
-            Column(Modifier.fillMaxWidth(0.8f)) {
-                when (val status = generation.status) {
-                    is ChatGeneration.Status.Running -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().aspectRatio(1f)
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerLow).padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)
-                        ) {
-                            if (status.total > 0) {
-                                Text(stringResource(status.message, status.step, status.total))
-                                LinearProgressIndicator({ status.step.toFloat() / status.total }, Modifier.fillMaxWidth())
-                            } else {
-                                Text(stringResource(status.message))
-                                LinearProgressIndicator(Modifier.fillMaxWidth())
-                            }
+        Column(Modifier.fillMaxWidth(0.8f)) {
+            when (val status = generation.status) {
+                is ChatGeneration.Status.Running -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1f)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)
+                    ) {
+                        if (status.total > 0) {
+                            Text(stringResource(status.message, status.step, status.total))
+                            LinearProgressIndicator({ status.step.toFloat() / status.total }, Modifier.fillMaxWidth())
+                        } else {
+                            Text(stringResource(status.message))
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
                         }
                     }
-                    ChatGeneration.Status.Cancelling -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(stringResource(R.string.chat_cancelling_generation))
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                    }
-                    is ChatGeneration.Status.Complete -> Image(
-                        bitmap = status.image,
-                        contentDescription = stringResource(R.string.chat_generated_image),
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp))
-                    )
-                    is ChatGeneration.Status.Failed -> Text(stringResource(status.message), color = MaterialTheme.colorScheme.error)
-                    ChatGeneration.Status.Cancelled -> Text(stringResource(R.string.chat_generation_cancelled))
                 }
+                ChatGeneration.Status.Cancelling -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.chat_cancelling_generation))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                ChatGeneration.Status.Saving -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.chat_saving_image))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                is ChatGeneration.Status.Complete -> {
+                    val context = LocalContext.current
+                    val request = remember(context, status.file) {
+                        ImageRequest.Builder(context).data(status.file)
+                            .memoryCachePolicy(CachePolicy.DISABLED).build()
+                    }
+                    var unavailable by remember(status.file) { mutableStateOf(false) }
+                    if (unavailable) {
+                        Text(stringResource(R.string.gallery_image_unavailable))
+                    } else {
+                        AsyncImage(
+                            model = request,
+                            contentDescription = stringResource(R.string.chat_generated_image),
+                            modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)),
+                            onError = { unavailable = true }
+                        )
+                    }
+                }
+                is ChatGeneration.Status.SaveFailed -> {
+                    status.image?.let {
+                        Image(
+                            bitmap = it,
+                            contentDescription = stringResource(R.string.chat_generated_image),
+                            modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp))
+                        )
+                    }
+                    Text(stringResource(R.string.chat_image_save_failed), color = MaterialTheme.colorScheme.error)
+                }
+                is ChatGeneration.Status.Failed -> Text(stringResource(status.message), color = MaterialTheme.colorScheme.error)
+                ChatGeneration.Status.Cancelled -> Text(stringResource(R.string.chat_generation_cancelled))
             }
         }
     }

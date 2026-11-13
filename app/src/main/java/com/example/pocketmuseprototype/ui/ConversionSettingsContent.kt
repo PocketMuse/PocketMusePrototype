@@ -3,8 +3,6 @@ package com.example.pocketmuseprototype.ui
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,11 +47,8 @@ internal fun ConversionSettingsContent(
         if (!saving && iterations == pending) pending = null
     }
 
-    Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp)
-    ) {
-        Text(stringResource(R.string.conversion_settings_title), style = typography.headlineSmall)
-        Text(label, modifier = Modifier.padding(top = 32.dp), style = typography.titleSmall)
+    Column(Modifier.fillMaxWidth()) {
+        Text(label, style = typography.titleSmall)
         DiscreteSlider(
             value = current ?: choices.first,
             choices = choices,

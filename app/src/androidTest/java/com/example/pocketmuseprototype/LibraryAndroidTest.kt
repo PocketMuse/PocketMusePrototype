@@ -60,6 +60,14 @@ class LibraryAndroidTest {
         val label = activity.getString(R.string.conversion_hqq_iterations)
         try {
             compose.onNodeWithContentDescription(menu).performClick()
+            val title = compose.onNodeWithText(activity.getString(R.string.conversion_settings_title))
+            val settingsHeading = compose.onNodeWithText(label)
+            val galleryHeading = compose.onNodeWithText(activity.getString(R.string.gallery_title))
+            title.assertIsDisplayed()
+            settingsHeading.assertIsDisplayed()
+            galleryHeading.assertIsDisplayed()
+            assertTrue(title.fetchSemanticsNode().boundsInRoot.bottom < settingsHeading.fetchSemanticsNode().boundsInRoot.top)
+            assertTrue(settingsHeading.fetchSemanticsNode().boundsInRoot.bottom < galleryHeading.fetchSemanticsNode().boundsInRoot.top)
             val slider = compose.onNodeWithContentDescription(label)
             if (initial != 5) {
                 slider.performSemanticsAction(SemanticsActions.SetProgress) { check(it(5f)) }

@@ -4,7 +4,7 @@ Android 프로토타입에서 Civitai 체크포인트를 탐색하고 내려받�
 
 Market에서 체크포인트 다운로드를 요청하면 공용 SD1.5 LCM LoRA도 별도 작업으로 준비한다. 진행률, 실패 재시도 및 삭제는 Library에서 확인할 수 있다. [공용 LoRA 다운로드 계약](docs/Model-Downloads.md#공용-sd15-lcm-lora)
 
-Chat에서 Library의 최적화된 정적 LCM 모델을 선택하고 프롬프트를 전송하면 기기 OpenCL GPU에서 512×512 이미지를 생성한다. 스텝은 2·4·6·8 중 선택하며 기본값은 4다. 앱이 번들 Tokenizer를 자동으로 준비하고, Runtime이 매 요청의 seed를 선택한다. 다른 탭으로 이동해도 작업이 계속되며 최신 요청과 결과 한 장은 화면 상태로만 유지한다. [Chat 생성 계약](docs/Runtime.md#chat-이미지-생성)
+Chat에서 Library의 최적화된 정적 LCM 모델을 선택하고 프롬프트를 전송하면 기기 OpenCL GPU에서 512×512 이미지를 생성한다. 스텝은 2·4·6·8 중 선택하며 기본값은 4다. 전송한 프롬프트와 결과는 현재 Chat 세션에 쌓인다. 생성에 성공한 이미지는 왼쪽 메뉴의 Gallery에서 확인할 수 있으며 앱을 재실행해도 유지된다. [Chat과 Gallery 저장 계약](docs/Runtime.md#chat-이미지-생성)
 
 ## 빌드와 테스트
 
@@ -53,7 +53,7 @@ Move-Item -LiteralPath "$build/engine-build.json" -Destination "$build/engine-bu
 
 ## 실제 정적 LCM 추론 스모크
 
-이미 준비된 ToonYou Beta 6가 있는 Galaxy S20+에서 Chat 경로를 검증하려면 다음과 같이 APK를 업데이트하고 계측 테스트를 실행한다. 이 테스트는 2스텝 요청의 첫 스텝에서 취소한 뒤, 탭 이동과 Activity 재생성을 거쳐 4스텝 이미지가 화면에 표시되는지 확인한다.
+이미 준비된 ToonYou Beta 6가 있는 Galaxy S20+에서 Chat 경로를 검증하려면 다음과 같이 APK를 업데이트하고 계측 테스트를 실행한다. 이 테스트는 2스텝 요청을 취소한 뒤 탭 이동과 Activity 재생성을 거쳐 4스텝 결과가 Chat에 표시되고, Gallery에 PNG와 메타데이터가 저장되는지 확인한다. 생성한 이미지는 Gallery에 남는다.
 
 ```powershell
 .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
@@ -65,7 +65,7 @@ adb shell am instrument -w -r -e class "$pkg.runtime.ChatGenerationAndroidTest" 
 
 아래 Runtime 전용 스모크는 별도의 수동 Tokenizer 경로를 사용한다.
 
-기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 앱은 Room v4를 사용하고 v1부터의 마이그레이션을 등록한다. 기존 설치와 같은 서명의 APK를 `adb install -r`로 설치한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
+기존 앱에서 다운로드와 정적 LCM 변환을 완료한 ToonYou 모델을 사용한다. 앱은 Room v5를 사용하고 v1부터의 마이그레이션을 등록한다. 기존 설치와 같은 서명의 APK를 `adb install -r`로 설치한다. [Runtime 호출 계약과 실측](docs/Runtime.md)
 
 앱 프로젝트 루트의 PowerShell에서 실행한다. `$key`는 Library에 등록된 모델의 `modelVersionId_fileId`다. 여러 기기가 연결되어 있다면 `ANDROID_SERIAL`로 대상을 지정한다.
 

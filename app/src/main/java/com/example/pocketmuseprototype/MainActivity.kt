@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val authState by auth.state.collectAsStateWithLifecycle()
             val library by app.downloads.models.collectAsStateWithLifecycle(emptyList())
-            val chatGeneration by imageGeneration.state.collectAsStateWithLifecycle()
+            val chatMessages by imageGeneration.state.collectAsStateWithLifecycle()
             val sharedLcm by app.sharedLcm.state.collectAsStateWithLifecycle(SharedLcmState.Missing)
             var settingsReadAttempt by remember { mutableIntStateOf(0) }
             val iterationsFlow = remember(settingsReadAttempt) {
@@ -127,9 +127,16 @@ class MainActivity : ComponentActivity() {
                     onHqqIterationsChange = { iterations ->
                         app.appScope.async { app.conversionSettings.setHqqIterations(iterations) }.await()
                     },
-                    chatGeneration = chatGeneration,
+                    chatMessages = chatMessages,
                     onGenerateImage = imageGeneration::generate,
                     onCancelGeneration = imageGeneration::cancel,
+                    gallery = app.gallery.gallery,
+                    onDeleteImage = { id ->
+                        app.appScope.async {
+                            app.gallery.delete(id)
+                            imageGeneration.imageDeleted(id)
+                        }.await()
+                    },
                 )
             }
         }

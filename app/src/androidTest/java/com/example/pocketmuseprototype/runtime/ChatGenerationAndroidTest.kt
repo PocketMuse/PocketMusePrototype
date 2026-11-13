@@ -1,5 +1,6 @@
 package com.example.pocketmuseprototype.runtime
 
+import android.graphics.BitmapFactory
 import android.os.SystemClock
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteractionsProvider
@@ -20,7 +21,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.getOrNull
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.pocketmuseprototype.MainActivity
+import com.example.pocketmuseprototype.PocketMuseApplication
 import com.example.pocketmuseprototype.R
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
@@ -60,7 +66,10 @@ class ChatGenerationAndroidTest {
 
         chooseSteps(4)
         promptField.performTextClearance()
-        promptField.performTextInput("masterpiece, best quality, a cute cat")
+        val prompt = "masterpiece, best quality, a cute cat"
+        val app = compose.activity.application as PocketMuseApplication
+        val existingIds = runBlocking { app.gallery.gallery.first().map { it.record.id }.toSet() }
+        promptField.performTextInput(prompt)
         val start = SystemClock.elapsedRealtime()
         send.performClick()
         compose.onNodeWithText(string(R.string.tab_models)).performClick()
@@ -72,7 +81,22 @@ class ChatGenerationAndroidTest {
                 compose.onAllNodes(hasContentDescription(description)).fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithContentDescription(description).assertIsDisplayed()
-            println("Chat displayed a four-step image in ${SystemClock.elapsedRealtime() - start} ms")
+            val saved = runBlocking(Dispatchers.IO) {
+                app.gallery.gallery.first().single { it.record.id !in existingIds }
+            }
+            assertEquals(prompt, saved.record.prompt)
+            assertEquals(4, saved.record.steps)
+            assertEquals(name, saved.record.modelName)
+            val decoded = checkNotNull(BitmapFactory.decodeFile(saved.file.path))
+            assertEquals(512, decoded.width)
+            assertEquals(512, decoded.height)
+            decoded.recycle()
+            println("Chat completed and Gallery saved a four-step PNG in ${SystemClock.elapsedRealtime() - start} ms")
+            compose.onNodeWithContentDescription(string(R.string.open_menu)).performClick()
+            val thumbnail = hasContentDescription(string(R.string.gallery_thumbnail, prompt))
+            compose.waitUntil(10_000) { compose.onAllNodes(thumbnail).fetchSemanticsNodes().isNotEmpty() }
+            compose.onAllNodes(thumbnail)[0].performClick()
+            compose.onNodeWithText(string(R.string.gallery_model, name)).assertIsDisplayed()
         } finally {
             if (compose.onAllNodes(hasContentDescription(string(R.string.chat_cancel_generation)))
                     .fetchSemanticsNodes().isNotEmpty()) cancel.performClick()

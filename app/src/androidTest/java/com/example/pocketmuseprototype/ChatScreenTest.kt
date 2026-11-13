@@ -23,6 +23,8 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -125,7 +127,7 @@ class ChatScreenTest {
     fun generationCallbackReceivesOneRequestAndRunningStateAllowsCancellation() {
         configureEdgeToEdge()
         val model = model(1, "ToonYou")
-        val generation = mutableStateOf<ChatGeneration?>(null)
+        val generation = mutableStateOf<List<ChatGeneration>>(emptyList())
         val requests = mutableListOf<ChatImageRequest>()
         val prompt = "Moonlit garden\nWatercolor"
         compose.setContent {
@@ -133,13 +135,13 @@ class ChatScreenTest {
                 ChatScreen(
                     library = listOf(LibraryItem(model, null)),
                     modifier = Modifier.fillMaxSize().safeDrawingPadding(),
-                    generation = generation.value,
+                    messages = generation.value,
                     onGenerate = {
                         requests += it
-                        generation.value = ChatGeneration(it.prompt, ChatGeneration.Status.Running())
+                        generation.value += ChatGeneration(requests.size.toLong(), it.prompt, ChatGeneration.Status.Running())
                     },
                     onCancelGeneration = {
-                        generation.value = ChatGeneration(prompt, ChatGeneration.Status.Cancelling)
+                        generation.value = listOf(generation.value.last().copy(status = ChatGeneration.Status.Cancelling))
                     }
                 )
             }
@@ -157,16 +159,23 @@ class ChatScreenTest {
         tapOnScreen(step)
         send.assertIsEnabled().performClick()
         compose.waitUntil(timeoutMillis = 5_000) { !keyboardVisible() }
-        compose.runOnIdle { assertEquals(listOf(ChatImageRequest(model.storageKey, 8, prompt)), requests) }
+        compose.runOnIdle { assertEquals(listOf(ChatImageRequest(model.storageKey, model.modelName, 8, prompt)), requests) }
         compose.onNodeWithText(model.modelName).assertIsNotEnabled()
         step.assertIsNotEnabled()
         send.assertDoesNotExist()
         compose.onNodeWithText(string(R.string.chat_preparing)).assertIsDisplayed()
         compose.onNodeWithContentDescription(string(R.string.chat_cancel_generation)).assertIsEnabled().performClick()
         compose.onNodeWithContentDescription(string(R.string.chat_cancelling_generation)).assertIsNotEnabled()
-        compose.runOnIdle { generation.value = ChatGeneration(prompt, ChatGeneration.Status.Cancelled) }
+        compose.runOnIdle { generation.value = listOf(generation.value.last().copy(status = ChatGeneration.Status.Cancelled)) }
         compose.onNodeWithText(string(R.string.chat_generation_cancelled)).assertIsDisplayed()
         send.assertIsNotEnabled()
+        val nextPrompt = "A forest in spring"
+        field.performTextInput(nextPrompt)
+        send.performClick()
+        compose.onNodeWithText(nextPrompt).assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
+        compose.onNodeWithText(prompt).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.chat_generation_cancelled)).assertIsDisplayed()
     }
 
     @Test
