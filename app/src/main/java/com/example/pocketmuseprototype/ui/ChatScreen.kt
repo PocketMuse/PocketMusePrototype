@@ -1,0 +1,360 @@
+package com.example.pocketmuseprototype.ui
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import com.example.pocketmuseprototype.R
+import com.example.pocketmuseprototype.download.DownloadStatus
+import com.example.pocketmuseprototype.download.LibraryItem
+import com.example.pocketmuseprototype.download.LibraryModel
+import com.example.pocketmuseprototype.download.ModelConversionStatus
+import com.example.pocketmuseprototype.download.STATIC_LCM_RECIPE
+
+/** One independent prompt, with the selected Library storage key and denoising step count. */
+internal data class ChatImageRequest(val modelKey: String, val steps: Int, val prompt: String)
+
+internal data class ChatGeneration(val prompt: String, val status: Status) {
+    sealed interface Status {
+        /** Fraction in 0..1, or null while progress is indeterminate. */
+        data class Running(val progress: Float? = null) : Status
+        data class Complete(val image: ImageBitmap) : Status
+        data class Failed(val message: String) : Status
+        data object Cancelled : Status
+    }
+}
+
+private val GenerationSteps = 2..8 step 2
+
+/**
+ * The caller owns generation and supplies its latest state. A null [onGenerate] disables sending.
+ * Both event callbacks run on the UI thread. The caller schedules generation and handles
+ * [onCancelGeneration] for the active request.
+ */
+@Composable
+internal fun ChatScreen(
+    library: List<LibraryItem>,
+    modifier: Modifier = Modifier,
+    generation: ChatGeneration? = null,
+    onGenerate: ((ChatImageRequest) -> Unit)? = null,
+    onCancelGeneration: (() -> Unit)? = null
+) {
+    val models = remember(library) {
+        library.map { it.model }.filter {
+            it.downloadStatus == DownloadStatus.Downloaded &&
+                it.conversionStatus == ModelConversionStatus.Converted &&
+                it.conversionRecipeId == STATIC_LCM_RECIPE
+        }
+    }
+    var modelKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var steps by rememberSaveable { mutableIntStateOf(4) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    val model = models.find { it.storageKey == modelKey } ?: models.singleOrNull()
+    LaunchedEffect(model?.storageKey) {
+        if (model != null) modelKey = model.storageKey
+    }
+    val isGenerating = generation?.status is ChatGeneration.Status.Running
+    val request = model?.takeIf { draft.isNotBlank() && !isGenerating }?.let {
+        ChatImageRequest(it.storageKey, steps, draft)
+    }
+    val focusManager = LocalFocusManager.current
+    var showModels by remember(isGenerating) { mutableStateOf(false) }
+
+    Column(modifier.padding(bottom = 12.dp)) {
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            if (generation != null) {
+                ChatContent(generation, onCancelGeneration)
+            } else if (onGenerate == null) {
+                Text(
+                    stringResource(R.string.chat_generation_unavailable),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        TextButton(onClick = { showModels = true }, enabled = !isGenerating) {
+            Text(
+                model?.modelName ?: stringResource(R.string.chat_select_model),
+                modifier = Modifier.weight(1f, fill = false),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(painterResource(R.drawable.ic_expand_more), contentDescription = null)
+        }
+        ChatComposer(
+            draft = draft,
+            onDraftChange = { draft = it },
+            steps = steps,
+            onStepsChange = { steps = it },
+            isGenerating = isGenerating,
+            canSend = onGenerate != null && request != null,
+            onSend = {
+                if (request != null && onGenerate != null) {
+                    focusManager.clearFocus()
+                    onGenerate(request)
+                }
+            }
+        )
+    }
+    if (showModels) {
+        ChatModelDialog(
+            models = models,
+            selected = model?.storageKey,
+            onDismiss = { showModels = false },
+            onSelect = {
+                modelKey = it
+                showModels = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun ChatModelDialog(
+    models: List<LibraryModel>,
+    selected: String?,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_models_title)) },
+        text = {
+            if (models.isEmpty()) {
+                Text(stringResource(R.string.chat_models_empty))
+            } else {
+                LazyColumn(Modifier.heightIn(max = 320.dp).selectableGroup()) {
+                    items(models, key = { it.storageKey }) { model ->
+                        val isSelected = model.storageKey == selected
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                .selectable(isSelected, role = Role.RadioButton) { onSelect(model.storageKey) }
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = isSelected, onClick = null)
+                            Column {
+                                Text(model.modelName, style = MaterialTheme.typography.bodyLarge)
+                                Text(model.versionName, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.chat_close_models)) }
+        }
+    )
+}
+
+@Composable
+private fun ChatComposer(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    steps: Int,
+    onStepsChange: (Int) -> Unit,
+    isGenerating: Boolean,
+    canSend: Boolean,
+    onSend: () -> Unit
+) {
+    var showSteps by remember(isGenerating) { mutableStateOf(false) }
+    var composerHeight by remember { mutableIntStateOf(0) }
+    val colors = MaterialTheme.colorScheme
+    val inputLabel = stringResource(R.string.chat_input)
+    val stepLabel = stringResource(R.string.chat_steps)
+    val stepCount = stringResource(R.string.chat_step_count, steps)
+    Box(Modifier.onSizeChanged { composerHeight = it.height }) {
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth().semantics { contentDescription = inputLabel },
+            placeholder = { Text(stringResource(R.string.chat_placeholder)) },
+            trailingIcon = {
+                Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilledTonalIconButton(
+                        onClick = { showSteps = !showSteps },
+                        enabled = !isGenerating,
+                        modifier = Modifier.semantics {
+                            contentDescription = stepLabel
+                            stateDescription = stepCount
+                        }
+                    ) {
+                        Text(steps.toString())
+                    }
+                    FilledIconButton(
+                        onClick = onSend,
+                        enabled = canSend,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            disabledContainerColor = colors.surfaceContainerHigh,
+                            disabledContentColor = colors.onSurfaceVariant
+                        )
+                    ) {
+                        Icon(painterResource(R.drawable.ic_arrow_up), stringResource(R.string.chat_send))
+                    }
+                }
+            },
+            maxLines = 4,
+            shape = RoundedCornerShape(28.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = colors.surfaceContainerLow,
+                unfocusedContainerColor = colors.surfaceContainerLow
+            )
+        )
+        if (showSteps) {
+            ChatStepPopup(steps, composerHeight, onStepsChange, onDismiss = { showSteps = false })
+        }
+    }
+}
+
+@Composable
+private fun ChatStepPopup(
+    steps: Int,
+    composerHeight: Int,
+    onStepsChange: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val gap = 8.dp
+    val dismissAreaHeight = with(LocalDensity.current) { composerHeight.toDp() } + gap
+    val position = remember {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val start = if (layoutDirection == LayoutDirection.Ltr) {
+                    anchorBounds.right - popupContentSize.width
+                } else {
+                    anchorBounds.left
+                }
+                return IntOffset(
+                    start.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)),
+                    (anchorBounds.bottom - popupContentSize.height).coerceAtLeast(0)
+                )
+            }
+        }
+    }
+    // A non-focusable popup keeps an active prompt keyboard in place.
+    Popup(popupPositionProvider = position, onDismissRequest = onDismiss) {
+        Column(Modifier.width(216.dp)) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shadowElevation = 6.dp
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    val stepCount = stringResource(R.string.chat_step_count, steps)
+                    DiscreteSlider(
+                        value = steps,
+                        choices = GenerationSteps,
+                        onValueChange = onStepsChange,
+                        modifier = Modifier.semantics { stateDescription = stepCount }
+                    )
+                }
+            }
+            // Consume taps over the anchor so dismissal cannot also reopen the popup.
+            Box(
+                Modifier.fillMaxWidth().height(dismissAreaHeight)
+                    .clickable(
+                        interactionSource = null,
+                        indication = null,
+                        onClickLabel = stringResource(R.string.chat_close_steps),
+                        onClick = onDismiss
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatContent(generation: ChatGeneration, onCancelGeneration: (() -> Unit)?) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(top = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { Text(generation.prompt, style = MaterialTheme.typography.bodyLarge) }
+        item {
+            when (val status = generation.status) {
+                is ChatGeneration.Status.Running -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.chat_generating))
+                        if (status.progress == null) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator({ status.progress }, Modifier.fillMaxWidth())
+                        }
+                        if (onCancelGeneration != null) {
+                            TextButton(onClick = onCancelGeneration) {
+                                Text(stringResource(R.string.chat_cancel_generation))
+                            }
+                        }
+                    }
+                }
+                is ChatGeneration.Status.Complete -> Image(
+                    bitmap = status.image,
+                    contentDescription = stringResource(R.string.chat_generated_image),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                is ChatGeneration.Status.Failed -> Text(status.message, color = MaterialTheme.colorScheme.error)
+                ChatGeneration.Status.Cancelled -> Text(stringResource(R.string.chat_generation_cancelled))
+            }
+        }
+    }
+}
