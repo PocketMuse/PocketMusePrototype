@@ -43,7 +43,7 @@ class ImageGenerationViewModelTest {
             val requests = mutableListOf<ChatImageRequest>()
             val cleanup = CompletableDeferred<Unit>()
             lateinit var callback: GenerationProgress
-            val viewModel = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { request, progress ->
+            val viewModel = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { request, progress, _ ->
                 requests += request
                 callback = progress
                 if (requests.size == 1) {
@@ -85,7 +85,7 @@ class ImageGenerationViewModelTest {
             assertEquals(listOf(tooLong.prompt, first.prompt, second.prompt), viewModel.state.value.map { it.prompt })
             assertEquals(Status.Cancelled, viewModel.state.value[1].status)
             assertEquals(Status.Failed(R.string.chat_model_unavailable), viewModel.state.value.last().status)
-            val freshSession = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { _, _ ->
+            val freshSession = ImageGenerationViewModel(saveImage = { _, _ -> error("No result to save") }) { _, _, _ ->
                 error("No generation requested")
             }
             assertTrue(freshSession.state.value.isEmpty())
